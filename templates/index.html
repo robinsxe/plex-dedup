@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plex Dedup — Media Manager</title>
+    <style>
+        :root {
+            --bg: #0f0f0f; --surface: #1a1a1a; --surface2: #242424; --border: #333;
+            --text: #e4e4e4; --text-dim: #888; --accent: #e5a00d; --accent-hover: #f0b429;
+            --danger: #e53e3e; --danger-hover: #fc4e4e; --success: #38a169;
+            --info: #4299e1; --purple: #805ad5;
+            --keep: #2d5a2d; --remove: #5a2d2d; --radius: 8px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; flex-wrap: wrap; gap: 10px; }
+        header h1 { font-size: 24px; font-weight: 600; }
+        header h1 span { color: var(--accent); }
+        .status-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+        .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 13px; background: var(--surface); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+        .status-dot.ok { background: var(--success); }
+        .status-dot.err { background: var(--danger); }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; border-radius: var(--radius) var(--radius) 0 0; background: var(--surface); border: 1px solid var(--border); border-bottom: none; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-dim); transition: all 0.15s; }
+        .tab:hover { color: var(--text); background: var(--surface2); }
+        .tab.active { color: var(--accent); background: var(--surface2); border-color: var(--accent); border-bottom: 2px solid var(--bg); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .stat { background: var(--surface2); border-radius: var(--radius); padding: 16px; text-align: center; }
+        .stat-value { font-size: 28px; font-weight: 700; color: var(--accent); }
+        .stat-label { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+        .stat-value.purple { color: var(--purple); }
+
+        .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
+        button { padding: 8px 18px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.15s; }
+        button:hover { background: var(--border); }
+        button.primary { background: var(--accent); color: #000; border-color: var(--accent); }
+        button.primary:hover { background: var(--accent-hover); }
+        button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+        button.danger:hover { background: var(--danger-hover); }
+        button.purple { background: var(--purple); border-color: var(--purple); color: #fff; }
+        button.purple:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        select { padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 14px; }
+        .toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+        .toggle input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+
+        .dup-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
+        .dup-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; user-select: none; }
+        .dup-header:hover { background: var(--surface2); }
+        .dup-title { font-weight: 600; flex: 1; }
+        .dup-year { color: var(--text-dim); font-size: 14px; }
+        .dup-badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; background: var(--danger); color: #fff; }
+        .dup-badge.tv { background: var(--info); }
+        .dup-saved { font-size: 13px; color: var(--success); font-weight: 500; }
+        .dup-arrow { color: var(--text-dim); transition: transform 0.2s; font-size: 18px; }
+        .dup-arrow.open { transform: rotate(90deg); }
+        .dup-details { display: none; padding: 0 16px 16px; }
+        .dup-details.open { display: block; }
+
+        .file-card { display: flex; gap: 12px; padding: 12px; border-radius: 6px; margin-bottom: 8px; align-items: center; border: 1px solid transparent; }
+        .file-card.keep { background: var(--keep); border-color: var(--success); }
+        .file-card.remove { background: var(--remove); border-color: var(--danger); opacity: 0.8; }
+        .file-tag { padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px; }
+        .file-tag.keep { background: var(--success); color: #fff; }
+        .file-tag.remove { background: var(--danger); color: #fff; }
+        .file-info { flex: 1; min-width: 0; }
+        .file-path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text-dim); word-break: break-all; }
+        .file-meta { display: flex; gap: 16px; margin-top: 4px; font-size: 13px; flex-wrap: wrap; }
+        .file-meta span { white-space: nowrap; }
+        .file-meta .label { color: var(--text-dim); }
+        .arr-status { font-size: 13px; padding: 8px 12px; border-radius: 6px; background: var(--surface2); margin-top: 8px; }
+
+        /* Subtitle items */
+        .sub-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+        .sub-item .title { flex: 1; font-weight: 500; }
+        .sub-lang-tag { padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+        .sub-lang-tag.downloaded { background: var(--success); color: #fff; }
+        .sub-lang-tag.found { background: var(--info); color: #fff; }
+        .sub-lang-tag.missing { background: var(--danger); color: #fff; }
+        .sub-lang-tag.exists { background: var(--surface2); color: var(--text-dim); }
+
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: var(--radius); color: #fff; font-size: 14px; z-index: 1000; opacity: 0; transition: opacity 0.3s; }
+        .toast.show { opacity: 1; }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+        .toast.info { background: var(--info); }
+        .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+        .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+
+        @media (max-width: 768px) {
+            .stats { grid-template-columns: repeat(2, 1fr); }
+            .file-meta { flex-direction: column; gap: 4px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>🎬 Plex <span>Dedup</span></h1>
+        <div class="status-badges">
+            <span class="status-badge"><span class="status-dot" id="plex-dot"></span> Plex</span>
+            <span class="status-badge"><span class="status-dot" id="radarr-dot"></span> Radarr</span>
+            <span class="status-badge"><span class="status-dot" id="sonarr-dot"></span> Sonarr</span>
+            <span class="status-badge"><span class="status-dot" id="opensubs-dot"></span> OpenSubs</span>
+        </div>
+    </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('dedup')">🗂 Deduplication</div>
+        <div class="tab" onclick="switchTab('subtitles')">🗒 Subtitles</div>
+    </div>
+
+    <!-- ======================== DEDUP TAB ======================== -->
+    <div class="tab-content active" id="tab-dedup">
+        <div class="stats" id="stats-row" style="display:none;">
+            <div class="stat"><div class="stat-value" id="stat-dupes">0</div><div class="stat-label">Total Duplicates</div></div>
+            <div class="stat"><div class="stat-value" id="stat-movies">0</div><div class="stat-label">Movie Dupes</div></div>
+            <div class="stat"><div class="stat-value" id="stat-episodes">0</div><div class="stat-label">Episode Dupes</div></div>
+            <div class="stat"><div class="stat-value" id="stat-files">0</div><div class="stat-label">Files to Remove</div></div>
+            <div class="stat"><div class="stat-value" id="stat-space">0 GB</div><div class="stat-label">Space to Reclaim</div></div>
+            <div class="stat"><div class="stat-value" id="stat-arr">0</div><div class="stat-label">Found in Arr</div></div>
+        </div>
+
+        <div class="card">
+            <div class="controls">
+                <select id="scan-type">
+                    <option value="all">Scan All</option>
+                    <option value="movies">Movies Only</option>
+                    <option value="tv">TV Shows Only</option>
+                </select>
+                <select id="strategy-select">
+                    <option value="best_quality">Keep: Best Quality</option>
+                    <option value="largest_file">Keep: Largest File</option>
+                    <option value="newest">Keep: Newest</option>
+                </select>
+                <button class="primary" id="btn-scan" onclick="scan()">🔍 Scan for Duplicates</button>
+                <button id="btn-select-all" onclick="toggleSelectAll()" style="display:none;">☑ Select All</button>
+                <button class="danger" id="btn-execute" onclick="executeSelected()" style="display:none;" disabled>🗑 Remove Selected</button>
+                <div style="flex:1;"></div>
+                <label class="toggle"><input type="checkbox" id="dry-run-toggle" checked onchange="updateConfig()"> Dry Run</label>
+                <label class="toggle"><input type="checkbox" id="unmonitor-toggle" checked onchange="updateConfig()"> Unmonitor</label>
+            </div>
+        </div>
+
+        <div id="results">
+            <div class="empty-state">
+                <div class="icon">📀</div>
+                <p>Click <strong>Scan for Duplicates</strong> to find duplicate movies and episodes.</p>
+                <p style="margin-top:8px; font-size:13px;">Supports both Movies (via Radarr) and TV Shows (via Sonarr).</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======================== SUBTITLES TAB ======================== -->
+    <div class="tab-content" id="tab-subtitles">
+        <div class="stats" id="sub-stats-row" style="display:none;">
+            <div class="stat"><div class="stat-value" id="sub-stat-total">0</div><div class="stat-label">Items Processed</div></div>
+            <div class="stat"><div class="stat-value purple" id="sub-stat-downloaded">0</div><div class="stat-label">Downloaded</div></div>
+            <div class="stat"><div class="stat-value" id="sub-stat-found">0</div><div class="stat-label">Found (Dry Run)</div></div>
+            <div class="stat"><div class="stat-value" id="sub-stat-missing">0</div><div class="stat-label">Not Available</div></div>
+            <div class="stat"><div class="stat-value" id="sub-stat-exist">0</div><div class="stat-label">Already Exist</div></div>
+        </div>
+
+        <div class="card">
+            <div class="controls">
+                <select id="sub-scan-type">
+                    <option value="all">All Libraries</option>
+                    <option value="movies">Movies Only</option>
+                    <option value="tv">TV Shows Only</option>
+                </select>
+                <select id="sub-limit">
+                    <option value="25">Process 25 items</option>
+                    <option value="50" selected>Process 50 items</option>
+                    <option value="100">Process 100 items</option>
+                    <option value="250">Process 250 items</option>
+                    <option value="0">Process all</option>
+                </select>
+                <button class="primary" onclick="scanSubtitles()">🔍 Scan Missing Subtitles</button>
+                <button class="purple" id="btn-sub-download" onclick="downloadSubtitles()">📥 Download Swedish Subtitles</button>
+                <div style="flex:1;"></div>
+                <span style="font-size:13px; color:var(--text-dim);">Languages: <strong id="sub-languages">sv</strong></span>
+            </div>
+        </div>
+
+        <div id="sub-results">
+            <div class="empty-state">
+                <div class="icon">🗒</div>
+                <p>Click <strong>Scan Missing Subtitles</strong> to find media without Swedish subtitles.</p>
+                <p style="margin-top:8px; font-size:13px;">Uses OpenSubtitles.com API to search and download .srt files.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let plans = [];
+let allSelected = false;
+
+// ---- Tabs ----
+function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelector(`.tab-content#tab-${tab}`).classList.add('active');
+    event.target.classList.add('active');
+}
+
+// ---- Init ----
+async function init() {
+    try {
+        const resp = await fetch('/api/status');
+        const data = await resp.json();
+        document.getElementById('plex-dot').className = 'status-dot ' + (data.plex_connected ? 'ok' : 'err');
+        document.getElementById('radarr-dot').className = 'status-dot ' + (data.radarr_connected ? 'ok' : 'err');
+        document.getElementById('sonarr-dot').className = 'status-dot ' + (data.sonarr_connected ? 'ok' : 'err');
+        document.getElementById('opensubs-dot').className = 'status-dot ' + (data.opensubtitles_connected ? 'ok' : 'err');
+
+        if (data.config) {
+            document.getElementById('strategy-select').value = data.config.keep_strategy;
+            document.getElementById('dry-run-toggle').checked = data.config.dry_run;
+            document.getElementById('unmonitor-toggle').checked = data.config.auto_unmonitor;
+            document.getElementById('sub-languages').textContent = (data.config.subtitle_languages || ['sv']).join(', ');
+        }
+        if (!data.ok) toast('Connection issues detected — check settings', 'error');
+    } catch (e) { toast('Cannot connect to backend: ' + e.message, 'error'); }
+}
+
+async function updateConfig() {
+    await fetch('/api/config', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            dry_run: document.getElementById('dry-run-toggle').checked,
+            keep_strategy: document.getElementById('strategy-select').value,
+            auto_unmonitor: document.getElementById('unmonitor-toggle').checked,
+        }),
+    });
+}
+
+// ---- Dedup Scan ----
+async function scan() {
+    const btn = document.getElementById('btn-scan');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Scanning...';
+    await updateConfig();
+    try {
+        const scanType = document.getElementById('scan-type').value;
+        const resp = await fetch('/api/scan', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ scan_type: scanType }),
+        });
+        const data = await resp.json();
+        if (!data.ok) { toast('Scan failed: ' + data.error, 'error'); return; }
+        plans = data.plans;
+        renderStats(data.summary);
+        renderPlans(data.plans);
+        toast(`Found ${data.plans.length} items with duplicates`, data.plans.length > 0 ? 'info' : 'success');
+    } catch (e) { toast('Scan error: ' + e.message, 'error');
+    } finally { btn.disabled = false; btn.innerHTML = '🔍 Scan for Duplicates'; }
+}
+
+function renderStats(s) {
+    document.getElementById('stats-row').style.display = 'grid';
+    document.getElementById('stat-dupes').textContent = s.total_duplicates;
+    document.getElementById('stat-movies').textContent = s.movie_duplicates;
+    document.getElementById('stat-episodes').textContent = s.episode_duplicates;
+    document.getElementById('stat-files').textContent = s.total_files_to_remove;
+    document.getElementById('stat-space').textContent = s.total_space_saved_gb + ' GB';
+    document.getElementById('stat-arr').textContent = s.arr_found;
+}
+
+function renderPlans(plans) {
+    const container = document.getElementById('results');
+    if (plans.length === 0) {
+        container.innerHTML = '<div class="empty-state"><div class="icon">✅</div><p>No duplicates found! Libraries are clean.</p></div>';
+        document.getElementById('btn-select-all').style.display = 'none';
+        document.getElementById('btn-execute').style.display = 'none';
+        return;
+    }
+    document.getElementById('btn-select-all').style.display = '';
+    document.getElementById('btn-execute').style.display = '';
+
+    container.innerHTML = plans.map((plan, idx) => `
+        <div class="dup-item" data-key="${plan.plex_rating_key}">
+            <div class="dup-header" onclick="toggleDetails(${idx})">
+                <input type="checkbox" class="dup-checkbox" data-key="${plan.plex_rating_key}" onclick="event.stopPropagation(); updateExecuteBtn()">
+                <span class="dup-title">${esc(plan.display_title)}</span>
+                <span class="dup-badge ${plan.media_type === 'episode' ? 'tv' : ''}">${plan.media_type === 'episode' ? '📺' : '🎬'} ${plan.file_count} copies</span>
+                <span class="dup-saved">Save ${plan.space_saved_gb} GB</span>
+                <span class="dup-arrow" id="arrow-${idx}">▶</span>
+            </div>
+            <div class="dup-details" id="details-${idx}">
+                <div class="file-card keep">
+                    <span class="file-tag keep">KEEP</span>
+                    <div class="file-info">
+                        <div class="file-path">${esc(plan.keep.file_path)}</div>
+                        <div class="file-meta">
+                            <span><span class="label">Quality:</span> ${esc(plan.keep.quality_label)}</span>
+                            <span><span class="label">Size:</span> ${plan.keep.file_size_gb} GB</span>
+                            <span><span class="label">Bitrate:</span> ${plan.keep.bitrate} kbps</span>
+                        </div>
+                    </div>
+                </div>
+                ${plan.remove.map(f => `
+                    <div class="file-card remove">
+                        <span class="file-tag remove">REMOVE</span>
+                        <div class="file-info">
+                            <div class="file-path">${esc(f.file_path)}</div>
+                            <div class="file-meta">
+                                <span><span class="label">Quality:</span> ${esc(f.quality_label)}</span>
+                                <span><span class="label">Size:</span> ${f.file_size_gb} GB</span>
+                                <span><span class="label">Bitrate:</span> ${f.bitrate} kbps</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('')}
+                <div class="arr-status">
+                    ${plan.arr_found
+                        ? `✅ Found in ${plan.media_type === 'episode' ? 'Sonarr' : 'Radarr'} — ${plan.arr_monitored ? '🔵 Monitored (will unmonitor)' : '⚪ Already unmonitored'}`
+                        : `⚠️ Not found in ${plan.media_type === 'episode' ? 'Sonarr' : 'Radarr'}`}
+                </div>
+                <div style="margin-top:10px; text-align:right;">
+                    <button onclick="executeSingle('${plan.plex_rating_key}')">Remove duplicates</button>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function toggleDetails(idx) { document.getElementById('details-'+idx).classList.toggle('open'); document.getElementById('arrow-'+idx).classList.toggle('open'); }
+function toggleSelectAll() { allSelected=!allSelected; document.querySelectorAll('.dup-checkbox').forEach(cb=>cb.checked=allSelected); document.getElementById('btn-select-all').textContent=allSelected?'☐ Deselect All':'☑ Select All'; updateExecuteBtn(); }
+function updateExecuteBtn() { const c=document.querySelectorAll('.dup-checkbox:checked').length; const btn=document.getElementById('btn-execute'); btn.disabled=c===0; const dry=document.getElementById('dry-run-toggle').checked; btn.textContent=dry?`🔍 Preview ${c} selected`:`🗑 Remove ${c} selected`; }
+
+async function executeSelected() {
+    const sel=Array.from(document.querySelectorAll('.dup-checkbox:checked')).map(cb=>cb.dataset.key);
+    if(!sel.length)return;
+    const dry=document.getElementById('dry-run-toggle').checked;
+    if(!dry&&!confirm(`Permanently delete duplicates for ${sel.length} items?`))return;
+    const btn=document.getElementById('btn-execute'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Processing...';
+    try {
+        const resp=await fetch('/api/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected:sel})});
+        const data=await resp.json();
+        if(data.ok){const r=data.result; toast(dry?`Dry run: ${r.success} would be cleaned`:`Done! ${r.success} cleaned, ${r.failed} failed`,r.failed>0?'error':'success'); if(!dry)setTimeout(scan,2000);}
+        else toast('Failed: '+data.error,'error');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;updateExecuteBtn();}
+}
+
+async function executeSingle(key) {
+    const dry=document.getElementById('dry-run-toggle').checked;
+    if(!dry&&!confirm('Delete duplicates for this item?'))return;
+    try{const resp=await fetch(`/api/execute/${key}`,{method:'POST'}); const data=await resp.json(); toast(data.ok?(dry?'Dry run complete':'Duplicates removed!'):'Failed: '+(data.error||'Unknown'),data.ok?'success':'error'); if(data.ok&&!dry)setTimeout(scan,2000);}catch(e){toast('Error: '+e.message,'error');}
+}
+
+// ---- Subtitles ----
+async function scanSubtitles() {
+    const btn=event.target; btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Scanning...';
+    try {
+        const resp=await fetch('/api/subtitles/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scan_type:document.getElementById('sub-scan-type').value})});
+        const data=await resp.json();
+        if(!data.ok){toast('Scan failed: '+data.error,'error');return;}
+        const cont=document.getElementById('sub-results');
+        if(data.total_missing===0){cont.innerHTML='<div class="empty-state"><div class="icon">✅</div><p>All media has Swedish subtitles!</p></div>';toast('No missing subtitles','success');return;}
+        cont.innerHTML=`<div class="card"><p style="margin-bottom:12px;"><strong>${data.total_missing}</strong> items missing subtitles.</p>${data.items.slice(0,100).map(item=>{
+            const t=item.media_type==='episode'?`${item.show_title||''} S${String(item.season_number||0).padStart(2,'0')}E${String(item.episode_number||0).padStart(2,'0')}`:`${item.title} (${item.year||''})`;
+            return `<div class="sub-item"><span class="title">${esc(t)}</span>${(item.missing_languages||[]).map(l=>`<span class="sub-lang-tag missing">${l} missing</span>`).join('')}</div>`;
+        }).join('')}${data.total_missing>100?`<p style="margin-top:12px;color:var(--text-dim);">Showing 100 of ${data.total_missing} items.</p>`:''}</div>`;
+        toast(`${data.total_missing} items missing subtitles`,'info');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='🔍 Scan Missing Subtitles';}
+}
+
+async function downloadSubtitles() {
+    const btn=document.getElementById('btn-sub-download'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Downloading...';
+    await updateConfig();
+    try {
+        const resp=await fetch('/api/subtitles/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scan_type:document.getElementById('sub-scan-type').value,limit:parseInt(document.getElementById('sub-limit').value)||0})});
+        const data=await resp.json();
+        if(!data.ok){toast('Download failed: '+data.error,'error');return;}
+        const s=data.summary;
+        document.getElementById('sub-stats-row').style.display='grid';
+        document.getElementById('sub-stat-total').textContent=s.total_items_processed;
+        document.getElementById('sub-stat-downloaded').textContent=s.subtitles_downloaded;
+        document.getElementById('sub-stat-found').textContent=s.subtitles_found_dry_run;
+        document.getElementById('sub-stat-missing').textContent=s.subtitles_not_available;
+        document.getElementById('sub-stat-exist').textContent=s.subtitles_already_exist;
+
+        const cont=document.getElementById('sub-results');
+        const results=data.results||[];
+        cont.innerHTML=`<div class="card">${results.map(r=>{
+            const langTags=Object.entries(r.languages).map(([lang,info])=>{
+                const cls={downloaded:'downloaded',found:'found',exists:'exists',not_found:'missing'}[info.status]||'missing';
+                const label={downloaded:'✅ '+lang,found:'🔍 '+lang,exists:'✓ '+lang,not_found:'✗ '+lang}[info.status]||info.status;
+                return `<span class="sub-lang-tag ${cls}">${label}</span>`;
+            }).join(' ');
+            return `<div class="sub-item"><span class="title">${esc(r.display_title)}</span>${langTags}</div>`;
+        }).join('')}</div>`;
+        const dry=document.getElementById('dry-run-toggle').checked;
+        toast(dry?`Dry run: ${s.subtitles_found_dry_run} subtitles found`:`Downloaded ${s.subtitles_downloaded} subtitles`,s.subtitles_downloaded>0||s.subtitles_found_dry_run>0?'success':'info');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Download Swedish Subtitles';}
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function toast(msg,type='info'){const el=document.getElementById('toast');el.textContent=msg;el.className='toast '+type+' show';setTimeout(()=>el.classList.remove('show'),4000);}
+init();
+</script>
+</body>
+</html>
