@@ -1,0 +1,96 @@
+# ============================================================
+# Plex Dedup — Ready to paste into QNAP Container Station 3
+# ============================================================
+#
+# INSTRUCTIONS:
+#
+#   1. Open Container Station 3
+#   2. Click "Applications" in the left sidebar
+#   3. Click "+ Create" button (top right)
+#   4. Choose a name: plex-dedup
+#   5. Paste this ENTIRE file into the YAML editor
+#   6. BEFORE clicking Create, edit the values below:
+#
+#      🔴 REQUIRED — Replace these with your actual values:
+#         - PLEX_TOKEN
+#         - RADARR_API_KEY
+#         - SONARR_API_KEY
+#         - PLEX_URL (your QNAP IP or Plex server IP)
+#         - RADARR_URL
+#         - SONARR_URL
+#         - OPENSUBTITLES_API_KEY (if you want subtitles)
+#         - OPENSUBTITLES_USERNAME
+#         - OPENSUBTITLES_PASSWORD
+#
+#      🟡 CHECK — Update these if your libraries have different names:
+#         - PLEX_MOVIE_LIBRARY (default: Movies)
+#         - PLEX_TV_LIBRARY (default: TV Shows)
+#
+#      🟡 CHECK — Update the volume mount under "volumes:"
+#         to match where YOUR media files are stored on the QNAP.
+#         Open Plex → pick any movie → Get Info → note the file path.
+#
+#   7. Click "Validate YAML" then "Create"
+#   8. Open http://YOUR_QNAP_IP:8585 in your browser
+#
+# ============================================================
+
+services:
+  plex-dedup:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/plex-dedup:latest
+    container_name: plex-dedup
+    restart: unless-stopped
+
+    ports:
+      - "8585:8585"
+
+    environment:
+      # ---- Plex ---- 🔴 UPDATE THESE
+      - PLEX_URL=http://YOUR_QNAP_IP:32400
+      - PLEX_TOKEN=PASTE_YOUR_PLEX_TOKEN_HERE
+      - PLEX_MOVIE_LIBRARY=Movies
+      - PLEX_TV_LIBRARY=TV Shows
+
+      # ---- Radarr ---- 🔴 UPDATE THESE
+      - RADARR_URL=http://YOUR_QNAP_IP:7878
+      - RADARR_API_KEY=PASTE_YOUR_RADARR_API_KEY_HERE
+
+      # ---- Sonarr ---- 🔴 UPDATE THESE
+      - SONARR_URL=http://YOUR_QNAP_IP:8989
+      - SONARR_API_KEY=PASTE_YOUR_SONARR_API_KEY_HERE
+
+      # ---- OpenSubtitles ---- 🔴 UPDATE THESE (or leave blank to skip subtitles)
+      - OPENSUBTITLES_API_KEY=PASTE_YOUR_OPENSUBTITLES_API_KEY_HERE
+      - OPENSUBTITLES_USERNAME=your-opensubtitles-username
+      - OPENSUBTITLES_PASSWORD=your-opensubtitles-password
+      - SUBTITLE_LANGUAGES=sv,en
+
+      # ---- Behavior ---- ✅ Defaults are fine, change if needed
+      - DRY_RUN=true
+      - KEEP_STRATEGY=best_quality
+      - AUTO_UNMONITOR=true
+      - DELETE_FILES=true
+      - TZ=Europe/Stockholm
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8585
+
+    volumes:
+      # ============================================================
+      # 🟡 UPDATE THIS to match YOUR media location on the QNAP
+      # ============================================================
+      # Check a file path in Plex (movie → Get Info) and make sure
+      # the path below covers it. The left and right side should
+      # be IDENTICAL so the container sees the same paths as Plex.
+      #
+      # Examples:
+      #   - /share/Multimedia:/share/Multimedia
+      #   - /share/Media:/share/Media
+      #   - /share/Movies:/share/Movies
+      #
+      - /share/Multimedia:/share/Multimedia
+
+      # Persistent data
+      - plex-dedup-data:/data
+
+volumes:
+  plex-dedup-data:

@@ -1,0 +1,104 @@
+# ============================================================
+# Plex Dedup — Docker Compose for QNAP Container Station
+# ============================================================
+#
+# QNAP Setup:
+#   1. Place this entire folder on your QNAP (e.g., /share/Container/plex-dedup/)
+#   2. Edit the .env file with your actual tokens/keys
+#   3. Adjust volume mounts below to match YOUR media paths
+#   4. In Container Station: Create Application → paste this file
+#      Or SSH in and run: docker-compose up -d
+#
+# The container needs READ access to your media files (for scanning)
+# and WRITE access if you want it to:
+#   - Delete duplicate files from disk
+#   - Download subtitle .srt files next to your media
+#
+# ============================================================
+
+services:
+  plex-dedup:
+    # Option 1: Pull pre-built image (recommended)
+    image: ghcr.io/YOUR_GITHUB_USERNAME/plex-dedup:latest
+    # Option 2: Build locally (uncomment below, comment out image above)
+    # build: .
+    container_name: plex-dedup
+    restart: unless-stopped
+
+    ports:
+      - "8585:8585"
+
+    environment:
+      # ---- Plex ----
+      - PLEX_URL=${PLEX_URL:-http://192.168.1.100:32400}
+      - PLEX_TOKEN=${PLEX_TOKEN:?Set PLEX_TOKEN in .env}
+      - PLEX_MOVIE_LIBRARY=${PLEX_MOVIE_LIBRARY:-Movies}
+      - PLEX_TV_LIBRARY=${PLEX_TV_LIBRARY:-TV Shows}
+
+      # ---- Radarr ----
+      - RADARR_URL=${RADARR_URL:-http://192.168.1.100:7878}
+      - RADARR_API_KEY=${RADARR_API_KEY:-}
+
+      # ---- Sonarr ----
+      - SONARR_URL=${SONARR_URL:-http://192.168.1.100:8989}
+      - SONARR_API_KEY=${SONARR_API_KEY:-}
+
+      # ---- OpenSubtitles ----
+      - OPENSUBTITLES_API_KEY=${OPENSUBTITLES_API_KEY:-}
+      - OPENSUBTITLES_USERNAME=${OPENSUBTITLES_USERNAME:-}
+      - OPENSUBTITLES_PASSWORD=${OPENSUBTITLES_PASSWORD:-}
+      - SUBTITLE_LANGUAGES=${SUBTITLE_LANGUAGES:-sv,en}
+      - SUBTITLE_AUTO_DOWNLOAD=${SUBTITLE_AUTO_DOWNLOAD:-true}
+
+      # ---- Behavior ----
+      - DRY_RUN=${DRY_RUN:-true}
+      - KEEP_STRATEGY=${KEEP_STRATEGY:-best_quality}
+      - AUTO_UNMONITOR=${AUTO_UNMONITOR:-true}
+      - DELETE_FILES=${DELETE_FILES:-true}
+      - RECYCLE_BIN=${RECYCLE_BIN:-}
+
+      # ---- Scheduling ----
+      - SCHEDULE_ENABLED=${SCHEDULE_ENABLED:-false}
+      - SCHEDULE_CRON_HOUR=${SCHEDULE_CRON_HOUR:-3}
+      - SCHEDULE_CRON_DAY_OF_WEEK=${SCHEDULE_CRON_DAY_OF_WEEK:-sun}
+
+      # ---- Web ----
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8585
+      - TZ=${TZ:-Europe/Stockholm}
+
+    volumes:
+      # ============================================================
+      # ⚠️  IMPORTANT: Update these paths to match YOUR QNAP setup
+      # ============================================================
+      #
+      # Your media library root — this must match what Plex sees.
+      # The container needs to see files at the SAME paths that
+      # Plex reports, so the mount point matters.
+      #
+      # Common QNAP patterns:
+      #   /share/Multimedia/Movies  → Movies folder
+      #   /share/Multimedia/TV      → TV Shows folder
+      #   /share/media              → All media in one share
+      #
+      # If Plex shows file paths like /share/Multimedia/Movies/...
+      # then mount: /share/Multimedia:/share/Multimedia
+      #
+      - /share/Multimedia:/share/Multimedia
+      #
+      # If your media is elsewhere, add more mounts:
+      # - /share/Download/complete:/share/Download/complete
+      #
+      # Optional: recycle bin for deleted files
+      # - /share/Recycle:/recycle
+      #
+      # Persistent data (logs, etc.)
+      - plex-dedup-data:/data
+
+    # Use host network if your services are on the same QNAP
+    # and you have issues reaching them via IP.
+    # Uncomment the line below and remove the 'ports' section above.
+    # network_mode: host
+
+volumes:
+  plex-dedup-data:
