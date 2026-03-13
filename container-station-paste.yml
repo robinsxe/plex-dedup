@@ -59,11 +59,16 @@ services:
       - SONARR_URL=http://YOUR_QNAP_IP:8989
       - SONARR_API_KEY=PASTE_YOUR_SONARR_API_KEY_HERE
 
+      # ---- Prowlarr ---- 🔴 UPDATE THESE (required for library conversion)
+      - PROWLARR_URL=http://YOUR_QNAP_IP:9696
+      - PROWLARR_API_KEY=PASTE_YOUR_PROWLARR_API_KEY_HERE
+
       # ---- OpenSubtitles ---- 🔴 UPDATE THESE (or leave blank to skip subtitles)
       - OPENSUBTITLES_API_KEY=PASTE_YOUR_OPENSUBTITLES_API_KEY_HERE
       - OPENSUBTITLES_USERNAME=your-opensubtitles-username
       - OPENSUBTITLES_PASSWORD=your-opensubtitles-password
       - SUBTITLE_LANGUAGES=sv,en
+      - SUBTITLE_MATCH_TAGS=NORDIC,SWE,SWESUB,SWEDISH
 
       # ---- Behavior ---- ✅ Defaults are fine, change if needed
       - DRY_RUN=true

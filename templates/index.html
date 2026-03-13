@@ -113,6 +113,7 @@
             <span class="status-badge"><span class="status-dot" id="radarr-dot"></span> Radarr</span>
             <span class="status-badge"><span class="status-dot" id="sonarr-dot"></span> Sonarr</span>
             <span class="status-badge"><span class="status-dot" id="opensubs-dot"></span> OpenSubs</span>
+            <span class="status-badge"><span class="status-dot" id="prowlarr-dot"></span> Prowlarr</span>
         </div>
     </header>
 
@@ -120,6 +121,7 @@
     <div class="tabs">
         <div class="tab active" onclick="switchTab('dedup')">🗂 Deduplication</div>
         <div class="tab" onclick="switchTab('subtitles')">🗒 Subtitles</div>
+        <div class="tab" onclick="switchTab('convert')">🇸🇪 Swedish Convert</div>
     </div>
 
     <!-- ======================== DEDUP TAB ======================== -->
@@ -202,6 +204,47 @@
             </div>
         </div>
     </div>
+
+    <!-- ======================== CONVERT TAB ======================== -->
+    <div class="tab-content" id="tab-convert">
+        <div class="stats" id="conv-stats-row" style="display:none;">
+            <div class="stat"><div class="stat-value" id="conv-stat-total">0</div><div class="stat-label">Scanned</div></div>
+            <div class="stat"><div class="stat-value" id="conv-stat-hassubs" style="color:var(--success);">0</div><div class="stat-label">Subs Available</div></div>
+            <div class="stat"><div class="stat-value" id="conv-stat-replace" style="color:var(--danger);">0</div><div class="stat-label">Needs Replacement</div></div>
+            <div class="stat"><div class="stat-value" id="conv-stat-nosubs">0</div><div class="stat-label">No Subs Anywhere</div></div>
+            <div class="stat"><div class="stat-value purple" id="conv-stat-nordic">0</div><div class="stat-label">NORDIC Available</div></div>
+            <div class="stat"><div class="stat-value" id="conv-stat-prowlarr">0</div><div class="stat-label">Found on Indexers</div></div>
+        </div>
+
+        <div class="card">
+            <div class="controls">
+                <select id="conv-scan-type">
+                    <option value="all">All Libraries</option>
+                    <option value="movies">Movies Only</option>
+                    <option value="tv">TV Shows Only</option>
+                </select>
+                <select id="conv-limit">
+                    <option value="0">Analyze all</option>
+                    <option value="25">Analyze 25 items</option>
+                    <option value="50">Analyze 50 items</option>
+                    <option value="100">Analyze 100 items</option>
+                </select>
+                <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
+                <button class="purple" id="btn-conv-search" onclick="convertSearch()" style="display:none;">🔎 Search Prowlarr</button>
+                <button class="danger" id="btn-conv-execute" onclick="convertExecute()" style="display:none;">📥 Grab Releases</button>
+                <div style="flex:1;"></div>
+                <label class="toggle"><input type="checkbox" id="conv-dry-run" checked> Dry Run</label>
+            </div>
+        </div>
+
+        <div id="conv-results">
+            <div class="empty-state">
+                <div class="icon">🇸🇪</div>
+                <p>Click <strong>Analyze Library</strong> to find movies & shows missing Swedish subtitles.</p>
+                <p style="margin-top:8px; font-size:13px;">Checks OpenSubtitles for which releases have Swedish subs, then searches Prowlarr for replacements.</p>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -227,6 +270,7 @@ async function init() {
         document.getElementById('radarr-dot').className = 'status-dot ' + (data.radarr_connected ? 'ok' : 'err');
         document.getElementById('sonarr-dot').className = 'status-dot ' + (data.sonarr_connected ? 'ok' : 'err');
         document.getElementById('opensubs-dot').className = 'status-dot ' + (data.opensubtitles_connected ? 'ok' : 'err');
+        document.getElementById('prowlarr-dot').className = 'status-dot ' + (data.prowlarr_connected ? 'ok' : 'err');
 
         if (data.config) {
             document.getElementById('strategy-select').value = data.config.keep_strategy;
@@ -407,6 +451,110 @@ async function downloadSubtitles() {
         const dry=document.getElementById('dry-run-toggle').checked;
         toast(dry?`Dry run: ${s.subtitles_found_dry_run} subtitles found`:`Downloaded ${s.subtitles_downloaded} subtitles`,s.subtitles_downloaded>0||s.subtitles_found_dry_run>0?'success':'info');
     } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Download Swedish Subtitles';}
+}
+
+// ---- Convert ----
+async function convertScan() {
+    const btn=document.getElementById('btn-conv-scan');
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Analyzing...';
+    try {
+        const resp=await fetch('/api/convert/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            scan_type:document.getElementById('conv-scan-type').value,
+            limit:parseInt(document.getElementById('conv-limit').value)||0,
+        })});
+        const data=await resp.json();
+        if(!data.ok){toast('Analysis failed: '+data.error,'error');return;}
+        const s=data.summary;
+        document.getElementById('conv-stats-row').style.display='grid';
+        document.getElementById('conv-stat-total').textContent=s.total_scanned;
+        document.getElementById('conv-stat-hassubs').textContent=s.has_subs;
+        document.getElementById('conv-stat-replace').textContent=s.needs_replacement;
+        document.getElementById('conv-stat-nosubs').textContent=s.no_subs_available;
+        document.getElementById('conv-stat-nordic').textContent=s.nordic_available;
+        document.getElementById('conv-stat-prowlarr').textContent=s.prowlarr_results_found;
+
+        renderConvertResults(data.results||[]);
+
+        if(s.needs_replacement>0){
+            document.getElementById('btn-conv-search').style.display='';
+        }
+        toast(`Analysis complete: ${s.needs_replacement} need replacement, ${s.has_subs} can download subs directly`,'info');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='🔍 Analyze Library';}
+}
+
+function renderConvertResults(results) {
+    const cont=document.getElementById('conv-results');
+    if(results.length===0){cont.innerHTML='<div class="empty-state"><div class="icon">✅</div><p>All items have Swedish subtitles!</p></div>';return;}
+
+    const statusOrder={needs_replacement:0,has_subs:1,no_subs_available:2,error:3};
+    results.sort((a,b)=>(statusOrder[a.status]||9)-(statusOrder[b.status]||9));
+
+    cont.innerHTML=results.map((r,idx)=>{
+        const statusColors={needs_replacement:'var(--danger)',has_subs:'var(--success)',no_subs_available:'var(--text-dim)',error:'var(--danger)'};
+        const statusLabels={needs_replacement:'Needs Replacement',has_subs:'Subs Available',no_subs_available:'No Subs Found',error:'Error'};
+        const statusColor=statusColors[r.status]||'var(--text-dim)';
+        const statusLabel=statusLabels[r.status]||r.status;
+
+        const nordicBadge=r.has_nordic_release?'<span style="background:var(--purple);color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">NORDIC</span>':'';
+        const prowlarrBadge=r.prowlarr_results&&r.prowlarr_results.length>0?`<span style="background:var(--info);color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${r.prowlarr_results.length} indexer results</span>`:'';
+
+        let details='';
+        if(r.status==='needs_replacement') {
+            details=`<div style="margin-top:8px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px;">
+                <div style="margin-bottom:6px;"><span style="color:var(--text-dim);">Current:</span> <span style="color:var(--danger);">${esc(r.current_release)}</span></div>
+                <div><span style="color:var(--text-dim);">Recommended:</span> <span style="color:var(--success);">${esc(r.recommended_release||'N/A')}</span></div>
+                ${r.matching_releases&&r.matching_releases.length>0?`<div style="margin-top:8px;color:var(--text-dim);">${r.matching_releases.length} release(s) with Swedish subs on OpenSubtitles</div>`:''}
+            </div>`;
+        } else if(r.status==='has_subs') {
+            details=`<div style="margin-top:8px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px;color:var(--success);">Swedish subtitle available for your current release — use the Subtitles tab to download it.</div>`;
+        }
+
+        return `<div class="dup-item">
+            <div class="dup-header" onclick="document.getElementById('conv-details-${idx}').classList.toggle('open');document.getElementById('conv-arrow-${idx}').classList.toggle('open');">
+                <span class="dup-title">${esc(r.display_title)}</span>
+                <span style="color:${statusColor};font-size:13px;font-weight:600;">${statusLabel}</span>
+                ${nordicBadge}${prowlarrBadge}
+                <span class="dup-arrow" id="conv-arrow-${idx}">▶</span>
+            </div>
+            <div class="dup-details" id="conv-details-${idx}">${details}</div>
+        </div>`;
+    }).join('');
+}
+
+async function convertSearch() {
+    const btn=document.getElementById('btn-conv-search');
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Searching Prowlarr...';
+    try {
+        const resp=await fetch('/api/convert/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        const data=await resp.json();
+        if(!data.ok){toast('Search failed: '+data.error,'error');return;}
+        const s=data.summary;
+        document.getElementById('conv-stat-prowlarr').textContent=s.prowlarr_results_found;
+
+        if(s.prowlarr_results_found>0){
+            document.getElementById('btn-conv-execute').style.display='';
+        }
+
+        // Re-render with prowlarr results
+        if(data.needs_replacement){renderConvertResults(data.needs_replacement);}
+        toast(`Found ${s.prowlarr_results_found} releases on indexers`,'info');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='🔎 Search Prowlarr';}
+}
+
+async function convertExecute() {
+    const dry=document.getElementById('conv-dry-run').checked;
+    if(!dry&&!confirm('This will push releases to your download client. Continue?'))return;
+    const btn=document.getElementById('btn-conv-execute');
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Grabbing...';
+    try {
+        // Update dry_run setting first
+        await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:dry})});
+        const resp=await fetch('/api/convert/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        const data=await resp.json();
+        if(!data.ok){toast('Execute failed: '+data.error,'error');return;}
+        const r=data.result;
+        toast(dry?`Dry run: would grab ${r.success} release(s)`:`Grabbed ${r.success} release(s), ${r.failed} failed, ${r.skipped} skipped`,r.failed>0?'error':'success');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Grab Releases';}
 }
 
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}

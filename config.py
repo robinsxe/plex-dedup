@@ -26,12 +26,17 @@ class Config:
     sonarr_url: str = ""
     sonarr_api_key: str = ""
 
+    # Prowlarr settings
+    prowlarr_url: str = ""
+    prowlarr_api_key: str = ""
+
     # OpenSubtitles settings
     opensubtitles_api_key: str = ""
     opensubtitles_username: str = ""
     opensubtitles_password: str = ""
     subtitle_languages: list = field(default_factory=lambda: ["sv", "en"])
     subtitle_auto_download: bool = True
+    subtitle_match_tags: list = field(default_factory=lambda: ["NORDIC", "SWE", "SWESUB", "SWEDISH"])
 
     # Behavior settings
     dry_run: bool = True
@@ -85,11 +90,14 @@ class Config:
             radarr_api_key=os.getenv("RADARR_API_KEY", ""),
             sonarr_url=os.getenv("SONARR_URL", "http://localhost:8989"),
             sonarr_api_key=os.getenv("SONARR_API_KEY", ""),
+            prowlarr_url=os.getenv("PROWLARR_URL", "http://localhost:9696"),
+            prowlarr_api_key=os.getenv("PROWLARR_API_KEY", ""),
             opensubtitles_api_key=os.getenv("OPENSUBTITLES_API_KEY", ""),
             opensubtitles_username=os.getenv("OPENSUBTITLES_USERNAME", ""),
             opensubtitles_password=os.getenv("OPENSUBTITLES_PASSWORD", ""),
             subtitle_languages=lang_list,
             subtitle_auto_download=os.getenv("SUBTITLE_AUTO_DOWNLOAD", "true").lower() == "true",
+            subtitle_match_tags=[t.strip() for t in os.getenv("SUBTITLE_MATCH_TAGS", "NORDIC,SWE,SWESUB,SWEDISH").split(",") if t.strip()],
             dry_run=os.getenv("DRY_RUN", "true").lower() == "true",
             keep_strategy=os.getenv("KEEP_STRATEGY", "best_quality"),
             auto_unmonitor=os.getenv("AUTO_UNMONITOR", "true").lower() == "true",
@@ -131,6 +139,14 @@ class Config:
             errors.append("SONARR_URL is required for TV dedup")
         if not self.sonarr_api_key:
             errors.append("SONARR_API_KEY is required for TV dedup")
+        return errors
+
+    def validate_prowlarr(self) -> list[str]:
+        errors = []
+        if not self.prowlarr_url:
+            errors.append("PROWLARR_URL is required for library conversion")
+        if not self.prowlarr_api_key:
+            errors.append("PROWLARR_API_KEY is required for library conversion")
         return errors
 
     def validate_opensubtitles(self) -> list[str]:

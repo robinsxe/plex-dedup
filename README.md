@@ -1,6 +1,6 @@
 # 🎬 Plex Dedup
 
-**Automatically find and remove duplicate movies & TV episodes, and download missing Swedish subtitles — all from one dashboard.**
+**Automatically find and remove duplicate movies & TV episodes, download missing Swedish subtitles, and replace releases to get Swedish subs — all from one dashboard.**
 
 Designed to run on QNAP NAS via Container Station, but works anywhere Docker runs.
 
@@ -9,8 +9,9 @@ Designed to run on QNAP NAS via Container Station, but works anywhere Docker run
 When using Usenet + Radarr/Sonarr + Plex, you end up with:
 - **Duplicate files** — Radarr/Sonarr re-download movies and episodes, wasting disk space
 - **Missing subtitles** — Swedish (or other language) .srt files aren't always included
+- **Wrong release** — Your current file has no Swedish subs available, but a different release does
 
-Fixing this manually means filtering Plex for duplicates, unmonitoring in Radarr/Sonarr, deleting files, and hunting for subtitles on OpenSubtitles. Plex Dedup automates all of it.
+Fixing this manually means filtering Plex for duplicates, unmonitoring in Radarr/Sonarr, deleting files, hunting for subtitles on OpenSubtitles, and cross-referencing which releases have Swedish subs. Plex Dedup automates all of it.
 
 ## What This Does
 
@@ -26,6 +27,14 @@ Fixing this manually means filtering Plex for duplicates, unmonitoring in Radarr
 2. **Searches OpenSubtitles** — Uses file hash + IMDB/TMDB IDs for accurate matching
 3. **Downloads .srt files** — Places them next to the media file with correct naming
 4. **Plex auto-detects** — Subtitles appear in Plex automatically
+
+### 🇸🇪 Swedish Subtitle Library Converter
+1. **Scans Plex** — Finds all movies and episodes missing Swedish subtitles
+2. **Queries OpenSubtitles** — Checks which *releases* have Swedish subs available
+3. **Identifies NORDIC releases** — Flags releases with NORDIC/SWE/SWESUB/SWEDISH tags
+4. **Compares releases** — If your current file doesn't have Swedish subs but another release does, flags it for replacement
+5. **Searches Prowlarr** — Finds the recommended release on your indexers
+6. **Grabs the release** — Pushes to your download client (SABnzbd/qBittorrent) via Prowlarr
 
 ## Quick Start (Docker on QNAP)
 
@@ -48,7 +57,7 @@ cp .env.example .env
 nano .env
 ```
 
-Fill in your Plex token, Radarr/Sonarr API keys, and OpenSubtitles credentials.
+Fill in your Plex token, Radarr/Sonarr API keys, Prowlarr API key, and OpenSubtitles credentials.
 
 ### 3. Edit volume mounts
 
@@ -99,6 +108,18 @@ python cli.py subtitles
 # Download subs for movies only, max 25 items
 python cli.py subtitles --type movies --limit 25 --live
 
+# Analyze library for Swedish subtitle availability
+python cli.py convert
+
+# Analyze movies only, limit to 50 items
+python cli.py convert --type movies --limit 50
+
+# Analyze and grab replacement releases (live mode)
+python cli.py convert --type all --live -y
+
+# Analyze only, don't search Prowlarr
+python cli.py convert --scan-only
+
 # Launch web dashboard
 python cli.py web
 ```
@@ -114,7 +135,7 @@ Or check your Plex preferences file:
 - **Linux:** `~/.local/share/plexmediaserver/Preferences.xml`
 - **QNAP:** `/share/CACHEDEV1_DATA/.qpkg/PlexMediaServer/Library/Plex Media Server/Preferences.xml`
 
-### Radarr / Sonarr API Key
+### Radarr / Sonarr / Prowlarr API Key
 Settings → General → API Key (in each app's web UI)
 
 ### OpenSubtitles API Key
@@ -134,10 +155,13 @@ Settings → General → API Key (in each app's web UI)
 | `RADARR_API_KEY` | — | Radarr API key |
 | `SONARR_URL` | `http://localhost:8989` | Sonarr URL |
 | `SONARR_API_KEY` | — | Sonarr API key |
+| `PROWLARR_URL` | `http://localhost:9696` | Prowlarr URL |
+| `PROWLARR_API_KEY` | — | Prowlarr API key (required for convert) |
 | `OPENSUBTITLES_API_KEY` | — | OpenSubtitles.com API key |
 | `OPENSUBTITLES_USERNAME` | — | OpenSubtitles username |
 | `OPENSUBTITLES_PASSWORD` | — | OpenSubtitles password |
 | `SUBTITLE_LANGUAGES` | `sv,en` | Comma-separated ISO 639-1 codes |
+| `SUBTITLE_MATCH_TAGS` | `NORDIC,SWE,SWESUB,SWEDISH` | Release tags to look for |
 | `DRY_RUN` | `true` | Preview mode — no files changed |
 | `KEEP_STRATEGY` | `best_quality` | `best_quality`, `largest_file`, or `newest` |
 | `AUTO_UNMONITOR` | `true` | Unmonitor in Radarr/Sonarr after dedup |
@@ -178,13 +202,14 @@ network_mode: host
 
 ## Web Dashboard Features
 
-- **Tabbed interface** — Switch between Dedup and Subtitles
-- **Connection indicators** — Live status for Plex, Radarr, Sonarr, OpenSubtitles
+- **Tabbed interface** — Switch between Dedup, Subtitles, and Swedish Convert
+- **Connection indicators** — Live status for Plex, Radarr, Sonarr, OpenSubtitles, Prowlarr
 - **Scan all or selective** — Movies only, TV only, or both
 - **Expandable details** — See exactly which files get kept/removed and why
 - **Per-item or bulk execution** — Process one movie or select many at once
 - **Dry run toggle** — Safe preview mode, always on by default
 - **Subtitle scanner** — Find and download missing Swedish subtitles
+- **Swedish Convert** — Analyze library for Swedish sub availability, search Prowlarr, grab replacements
 
 ## Troubleshooting
 
@@ -209,9 +234,11 @@ plex-dedup/
 ├── plex_client.py          # Plex API (movies + TV)
 ├── radarr_client.py        # Radarr API (movie unmonitoring)
 ├── sonarr_client.py        # Sonarr API (episode unmonitoring)
+├── prowlarr_client.py      # Prowlarr API (indexer search & grab)
 ├── opensubtitles_client.py # OpenSubtitles REST API
 ├── subtitle_manager.py     # Subtitle scanning & downloading
 ├── dedup_engine.py         # Core dedup logic
+├── library_analyzer.py     # Swedish subtitle library converter
 ├── app.py                  # Flask web dashboard
 ├── cli.py                  # CLI interface
 └── templates/

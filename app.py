@@ -9,6 +9,7 @@ from flask import Flask, render_template, jsonify, request
 from config import Config
 from dedup_engine import DedupEngine, DeduplicationPlan
 from subtitle_manager import SubtitleManager
+from library_analyzer import LibraryAnalyzer, AnalysisResult
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,7 +23,9 @@ app = Flask(__name__)
 config = Config.from_env()
 engine = DedupEngine(config)
 sub_manager = SubtitleManager(config)
+analyzer = LibraryAnalyzer(config)
 current_plans: list[DeduplicationPlan] = []
+current_analysis: list[AnalysisResult] = []
 
 
 @app.route("/")
@@ -50,8 +53,18 @@ def api_status():
                 config.opensubtitles_password,
             )
             opensubs_ok = os_client.test_connection()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"OpenSubtitles connection test failed: {e}")
+
+    # Test Prowlarr separately
+    prowlarr_ok = False
+    if config.prowlarr_api_key:
+        try:
+            from prowlarr_client import ProwlarrClient
+            pr_client = ProwlarrClient(config.prowlarr_url, config.prowlarr_api_key)
+            prowlarr_ok = pr_client.test_connection()
+        except Exception as e:
+            logger.warning(f"Prowlarr connection test failed: {e}")
 
     return jsonify({
         "ok": connections.get("plex", False),
@@ -59,6 +72,7 @@ def api_status():
         "radarr_connected": connections.get("radarr", False),
         "sonarr_connected": connections.get("sonarr", False),
         "opensubtitles_connected": opensubs_ok,
+        "prowlarr_connected": prowlarr_ok,
         "libraries": connections.get("libraries", []),
         "config": {
             "movie_library": config.plex_movie_library,
@@ -201,9 +215,92 @@ def api_subtitle_download():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/convert/scan", methods=["POST"])
+def api_convert_scan():
+    """Analyze library for Swedish subtitle availability."""
+    global current_analysis
+
+    data = request.json or {}
+    scan_type = data.get("scan_type", "movies")  # "movies", "tv", "all"
+    limit = data.get("limit", 0)
+
+    results = []
+    try:
+        if scan_type in ("movies", "all"):
+            res = analyzer.analyze_library(
+                config.plex_movie_library, "movie", limit=limit,
+            )
+            results.extend(res)
+
+        if scan_type in ("tv", "all"):
+            res = analyzer.analyze_library(
+                config.plex_tv_library, "show", limit=limit,
+            )
+            results.extend(res)
+
+        current_analysis = results
+        summary = LibraryAnalyzer.get_summary(results)
+        return jsonify({
+            "ok": True,
+            "summary": summary,
+            "results": [r.to_dict() for r in results[:200]],
+        })
+    except Exception as e:
+        logger.error(f"Convert scan failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/convert/search", methods=["POST"])
+def api_convert_search():
+    """Search Prowlarr for replacement releases."""
+    global current_analysis
+
+    if not current_analysis:
+        return jsonify({"ok": False, "error": "No analysis results. Run convert/scan first."})
+
+    data = request.json or {}
+    limit = data.get("limit", 0)
+
+    try:
+        analyzer.search_replacements(current_analysis, limit=limit)
+        summary = LibraryAnalyzer.get_summary(current_analysis)
+        needs = [r for r in current_analysis if r.status == "needs_replacement"]
+        return jsonify({
+            "ok": True,
+            "summary": summary,
+            "needs_replacement": [r.to_dict() for r in needs[:200]],
+        })
+    except Exception as e:
+        logger.error(f"Convert search failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/convert/execute", methods=["POST"])
+def api_convert_execute():
+    """Execute replacement downloads via Prowlarr."""
+    global current_analysis
+
+    if not current_analysis:
+        return jsonify({"ok": False, "error": "No analysis results. Run convert/scan first."})
+
+    try:
+        result = analyzer.execute_all(current_analysis, dry_run=config.dry_run)
+        return jsonify({
+            "ok": True,
+            "result": result,
+            "results": [
+                r.to_dict() for r in current_analysis
+                if r.status in ("replaced", "needs_replacement")
+            ][:200],
+        })
+    except Exception as e:
+        logger.error(f"Convert execute failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/config", methods=["GET", "PUT"])
 def api_config():
-    global config, engine, sub_manager
+    global config, engine, sub_manager, analyzer
 
     if request.method == "GET":
         return jsonify({
@@ -234,11 +331,14 @@ def api_config():
 
     engine = DedupEngine(config)
     sub_manager = SubtitleManager(config)
+    analyzer = LibraryAnalyzer(config)
     return jsonify({"ok": True})
 
 
 def run():
-    app.run(host=config.web_host, port=config.web_port, debug=True)
+    import os
+    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    app.run(host=config.web_host, port=config.web_port, debug=debug)
 
 
 if __name__ == "__main__":

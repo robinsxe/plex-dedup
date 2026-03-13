@@ -18,6 +18,7 @@ import humanize
 from config import Config
 from dedup_engine import DedupEngine
 from subtitle_manager import SubtitleManager
+from library_analyzer import LibraryAnalyzer
 
 console = Console()
 
@@ -158,6 +159,164 @@ def cmd_subtitles(config, args):
     console.print(table)
 
 
+def cmd_convert(config, args):
+    """Analyze library for Swedish subtitle availability and replace releases."""
+    console.print("\n[bold]Swedish Subtitle Library Converter[/]")
+
+    # Validate required services
+    errors = config.validate_opensubtitles()
+    if errors:
+        console.print("[bold red]OpenSubtitles configuration missing:[/]")
+        for e in errors:
+            console.print(f"  [red]• {e}[/]")
+        return
+
+    prowlarr_errors = config.validate_prowlarr()
+    if prowlarr_errors:
+        console.print("[bold yellow]Prowlarr not configured — analysis only, no replacements[/]")
+
+    analyzer = LibraryAnalyzer(config)
+
+    # Test connections
+    console.print("[dim]Testing connections...[/]")
+    plex_ok = analyzer.plex.connect()
+    if not plex_ok:
+        console.print("[bold red]Cannot connect to Plex![/]")
+        return
+
+    opensubs_ok = analyzer.opensubs.test_connection()
+    if not opensubs_ok:
+        console.print("[bold red]Cannot connect to OpenSubtitles![/]")
+        return
+
+    prowlarr_ok = False
+    if not prowlarr_errors:
+        prowlarr_ok = analyzer.prowlarr.test_connection()
+        if not prowlarr_ok:
+            console.print("[bold yellow]Prowlarr not reachable — analysis only[/]")
+
+    console.print(
+        f"  Plex: [green]OK[/]  |  OpenSubtitles: [green]OK[/]"
+        f"  |  Prowlarr: {'[green]OK[/]' if prowlarr_ok else '[yellow]N/A[/]'}"
+    )
+
+    # Step 1: Analyze
+    all_results = []
+    scan_type = getattr(args, 'type', 'all') or 'all'
+    limit = getattr(args, 'convert_limit', 0) or 0
+
+    if scan_type in ("movies", "all"):
+        console.print(f"\n[bold]Analyzing movie library:[/] {config.plex_movie_library}")
+        with console.status("[bold yellow]Querying OpenSubtitles for each movie..."):
+            results = analyzer.analyze_library(
+                config.plex_movie_library, "movie", limit=limit,
+            )
+            all_results.extend(results)
+
+    if scan_type in ("tv", "all"):
+        console.print(f"\n[bold]Analyzing TV library:[/] {config.plex_tv_library}")
+        with console.status("[bold yellow]Querying OpenSubtitles for each episode..."):
+            results = analyzer.analyze_library(
+                config.plex_tv_library, "show", limit=limit,
+            )
+            all_results.extend(results)
+
+    if not all_results:
+        console.print("\n[bold green]All items already have Swedish subtitles![/]")
+        return
+
+    # Summary table
+    summary = LibraryAnalyzer.get_summary(all_results)
+    console.print()
+    table = Table(title="Analysis Summary", box=box.ROUNDED)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right", style="yellow")
+    table.add_row("Total scanned", str(summary["total_scanned"]))
+    table.add_row("Subs available (download only)", str(summary["has_subs"]))
+    table.add_row("Needs replacement", str(summary["needs_replacement"]))
+    table.add_row("No subs available anywhere", str(summary["no_subs_available"]))
+    table.add_row("NORDIC releases found", str(summary["nordic_available"]))
+    table.add_row("Errors", str(summary["errors"]))
+    console.print(table)
+
+    # Detail table for items needing replacement
+    needs_replacement = [r for r in all_results if r.status == "needs_replacement"]
+    has_subs = [r for r in all_results if r.status == "has_subs"]
+
+    if has_subs:
+        console.print(
+            f"\n[green]{len(has_subs)} item(s) can get Swedish subs downloaded "
+            f"without replacing the file.[/] Run [bold]subtitles[/] command for those."
+        )
+
+    if needs_replacement:
+        console.print()
+        detail = Table(
+            title="Releases to Replace", box=box.SIMPLE_HEAVY, show_lines=True,
+        )
+        detail.add_column("#", justify="right", style="dim", width=4)
+        detail.add_column("Title", style="bold", max_width=40)
+        detail.add_column("Current Release", style="red", max_width=35)
+        detail.add_column("Recommended", style="green", max_width=35)
+        detail.add_column("Nordic", justify="center", width=7)
+        detail.add_column("Subs", justify="right", width=5)
+
+        for i, r in enumerate(needs_replacement, 1):
+            nordic = "Yes" if r.has_nordic_release else ""
+            subs = str(len(r.matching_releases))
+            detail.add_row(
+                str(i),
+                r.display_title,
+                r.current_release[:35],
+                (r.recommended_release or "")[:35],
+                nordic,
+                subs,
+            )
+
+        console.print(detail)
+
+        # Step 2: Search Prowlarr
+        if prowlarr_ok and not getattr(args, 'scan_only', False):
+            console.print(
+                f"\n[bold]Searching Prowlarr for {len(needs_replacement)} "
+                f"replacement release(s)...[/]"
+            )
+            with console.status("[bold yellow]Searching indexers..."):
+                analyzer.search_replacements(all_results)
+
+            found = sum(1 for r in needs_replacement if r.prowlarr_results)
+            console.print(
+                f"  Found releases on indexers for [bold]{found}[/] "
+                f"out of {len(needs_replacement)} items"
+            )
+
+            # Step 3: Execute
+            if found > 0:
+                if config.dry_run:
+                    console.print("\n[bold yellow]DRY RUN MODE[/]")
+                    exec_result = analyzer.execute_all(all_results, dry_run=True)
+                    console.print(
+                        f"  Would grab {exec_result['success']} release(s), "
+                        f"{exec_result['skipped']} skipped (not found on indexers)"
+                    )
+                else:
+                    console.print(
+                        f"\n[bold red]LIVE MODE[/] — Will push {found} "
+                        f"release(s) to download client"
+                    )
+                    if not getattr(args, 'yes', False) and not Confirm.ask("Continue?"):
+                        console.print("[dim]Cancelled.[/]")
+                        return
+                    exec_result = analyzer.execute_all(all_results, dry_run=False)
+                    console.print(
+                        f"\n[bold green]Done![/] {exec_result['success']} grabbed, "
+                        f"{exec_result['failed']} failed, "
+                        f"{exec_result['skipped']} skipped"
+                    )
+    else:
+        console.print("\n[dim]No replacements needed.[/]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plex Dedup — Media Manager")
     sub = parser.add_subparsers(dest="command", help="Command to run")
@@ -177,6 +336,14 @@ def main():
     sub_p.add_argument("--type", choices=["movies", "tv", "all"], default="all")
     sub_p.add_argument("--live", action="store_true", help="Disable dry run")
     sub_p.add_argument("--limit", dest="sub_limit", type=int, default=50, help="Max items to process")
+
+    # Convert command
+    conv_p = sub.add_parser("convert", help="Find and replace releases to get Swedish subtitles")
+    conv_p.add_argument("--type", choices=["movies", "tv", "all"], default="all")
+    conv_p.add_argument("--live", action="store_true", help="Disable dry run")
+    conv_p.add_argument("--limit", dest="convert_limit", type=int, default=0, help="Max items to analyze (0 = all)")
+    conv_p.add_argument("--scan-only", action="store_true", help="Analyze only, don't search Prowlarr")
+    conv_p.add_argument("-y", "--yes", action="store_true")
 
     # Web command
     web_p = sub.add_parser("web", help="Launch web dashboard")
@@ -218,6 +385,11 @@ def main():
     # Subtitles mode
     if args.command == "subtitles":
         cmd_subtitles(config, args)
+        return
+
+    # Convert mode
+    if args.command == "convert":
+        cmd_convert(config, args)
         return
 
     # Default: dedup
