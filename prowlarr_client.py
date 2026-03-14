@@ -75,19 +75,27 @@ class ProwlarrClient:
         Returns:
             List of release result dicts from Prowlarr.
         """
-        params = {"query": query, "type": "search"}
+        params = {"query": query}
 
         if categories:
+            # Prowlarr expects repeated params: categories=2000&categories=5000
             params["categories"] = categories
         if indexer_ids:
             params["indexerIds"] = indexer_ids
 
         try:
+            logger.debug(f"Prowlarr search params: {params}")
             results = self._get("search", params=params)
             logger.info(
                 f"Search for '{query}' returned {len(results)} results"
             )
             return results
+        except requests.HTTPError as e:
+            logger.error(
+                f"Search failed for '{query}': HTTP {e.response.status_code} "
+                f"— {e.response.text[:200] if e.response else ''}"
+            )
+            return []
         except Exception as e:
             logger.error(f"Search failed for '{query}': {e}")
             return []
@@ -104,12 +112,17 @@ class ProwlarrClient:
             True if the grab was successful, False otherwise.
         """
         try:
-            self._post("search", data={"guid": guid, "indexerId": indexer_id})
-            logger.info(f"Grabbed release {guid} from indexer {indexer_id}")
+            # Prowlarr grab endpoint: GET /api/v1/indexer/{id}/download?link={guid}
+            resp = self.session.get(
+                f"{self.url}/api/v1/indexer/{indexer_id}/download",
+                params={"link": guid},
+            )
+            resp.raise_for_status()
+            logger.info(f"Grabbed release from indexer {indexer_id}")
             return True
         except Exception as e:
             logger.error(
-                f"Failed to grab release {guid} from indexer {indexer_id}: {e}"
+                f"Failed to grab release from indexer {indexer_id}: {e}"
             )
             return False
 
