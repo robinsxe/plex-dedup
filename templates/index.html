@@ -233,6 +233,14 @@
                     <option value="50">Analyze 50 items</option>
                     <option value="100">Analyze 100 items</option>
                 </select>
+                <select id="conv-search-limit">
+                    <option value="0">Search all on Prowlarr</option>
+                    <option value="10">Search 10 on Prowlarr</option>
+                    <option value="25">Search 25 on Prowlarr</option>
+                    <option value="50" selected>Search 50 on Prowlarr</option>
+                    <option value="100">Search 100 on Prowlarr</option>
+                    <option value="-1">Skip Prowlarr search</option>
+                </select>
                 <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
                 <button class="danger" id="btn-conv-execute" onclick="convertExecute()" style="display:none;">📥 Grab Releases</button>
                 <div style="flex:1;"></div>
@@ -478,6 +486,7 @@ async function convertScan() {
         const resp=await fetch('/api/convert/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
             scan_type:document.getElementById('conv-scan-type').value,
             limit:parseInt(document.getElementById('conv-limit').value)||0,
+            search_limit:parseInt(document.getElementById('conv-search-limit').value),
         })});
         const data=await resp.json();
         if(!data.ok){toast('Analysis failed: '+data.error,'error');btn.disabled=false;btn.innerHTML='🔍 Analyze Library';return;}

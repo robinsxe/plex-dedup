@@ -250,7 +250,7 @@ def api_subtitle_download():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-def _run_convert_scan(scan_type: str, limit: int):
+def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
     """Background worker for convert scan + Prowlarr search."""
     global current_analysis
 
@@ -290,8 +290,11 @@ def _run_convert_scan(scan_type: str, limit: int):
         current_analysis = results
 
         # Auto-search Prowlarr for items needing replacement
+        # search_limit: 0 = all, -1 = skip, N = first N items
         needs = [r for r in results if r.status == "needs_replacement"]
-        if needs and config.prowlarr_api_key:
+        if needs and config.prowlarr_api_key and search_limit != -1:
+            search_count = len(needs) if search_limit == 0 else min(search_limit, len(needs))
+
             def on_search_progress(current, total, title):
                 with scan_lock:
                     scan_progress.update({
@@ -302,10 +305,12 @@ def _run_convert_scan(scan_type: str, limit: int):
             with scan_lock:
                 scan_progress.update({
                     "phase": "searching", "current": 0,
-                    "total": len(needs), "current_title": "Searching Prowlarr...",
+                    "total": search_count,
+                    "current_title": "Searching Prowlarr...",
                 })
             analyzer.search_replacements(
-                results, progress_callback=on_search_progress,
+                results, limit=search_limit,
+                progress_callback=on_search_progress,
             )
 
         with scan_lock:
@@ -333,9 +338,10 @@ def api_convert_scan():
     data = request.json or {}
     scan_type = data.get("scan_type", "movies")
     limit = data.get("limit", 0)
+    search_limit = data.get("search_limit", 50)
 
     thread = threading.Thread(
-        target=_run_convert_scan, args=(scan_type, limit), daemon=True,
+        target=_run_convert_scan, args=(scan_type, limit, search_limit), daemon=True,
     )
     thread.start()
     return jsonify({"ok": True, "message": "Scan started"})
