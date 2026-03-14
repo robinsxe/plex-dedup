@@ -425,7 +425,8 @@ class LibraryAnalyzer:
     # ------------------------------------------------------------------ #
 
     def search_replacements(
-        self, results: list[AnalysisResult], limit: int = 0
+        self, results: list[AnalysisResult], limit: int = 0,
+        progress_callback=None,
     ) -> list[AnalysisResult]:
         """
         For items that need replacement, search Prowlarr for the
@@ -435,6 +436,7 @@ class LibraryAnalyzer:
         Args:
             results: List of AnalysisResult from analyze_library
             limit: Max items to search (0 = all)
+            progress_callback: Optional callable(current, total, title)
 
         Returns:
             The same list with prowlarr_results populated.
@@ -444,16 +446,20 @@ class LibraryAnalyzer:
         if limit > 0:
             needs_replacement = needs_replacement[:limit]
 
-        logger.info(
-            f"Searching Prowlarr for {len(needs_replacement)} replacement releases"
-        )
+        total = len(needs_replacement)
+        logger.info(f"Searching Prowlarr for {total} replacement releases")
 
         for idx, result in enumerate(needs_replacement, start=1):
             if not result.recommended_release:
                 continue
 
+            if progress_callback:
+                try:
+                    progress_callback(idx, total, result.display_title)
+                except Exception:
+                    pass
+
             # Build a search query from the movie/show title + year
-            # (full release names like "Movie.2024.1080p.WEB-DL-Group" are too specific)
             if result.media_type == "episode" and result.show_title:
                 season = result.season_number or 0
                 episode = result.episode_number or 0
@@ -464,7 +470,7 @@ class LibraryAnalyzer:
                 search_query = result.title
 
             logger.info(
-                f"[{idx}/{len(needs_replacement)}] "
+                f"[{idx}/{total}] "
                 f"Searching Prowlarr for: {search_query} "
                 f"(want: {result.recommended_release})"
             )

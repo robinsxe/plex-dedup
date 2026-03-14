@@ -291,13 +291,22 @@ def _run_convert_scan(scan_type: str, limit: int):
 
         # Auto-search Prowlarr for items needing replacement
         needs = [r for r in results if r.status == "needs_replacement"]
-        if needs:
+        if needs and config.prowlarr_api_key:
+            def on_search_progress(current, total, title):
+                with scan_lock:
+                    scan_progress.update({
+                        "current": current, "total": total,
+                        "current_title": f"[{current}/{total}] {title}",
+                    })
+
             with scan_lock:
                 scan_progress.update({
                     "phase": "searching", "current": 0,
                     "total": len(needs), "current_title": "Searching Prowlarr...",
                 })
-            analyzer.search_replacements(results)
+            analyzer.search_replacements(
+                results, progress_callback=on_search_progress,
+            )
 
         with scan_lock:
             scan_progress.update({
