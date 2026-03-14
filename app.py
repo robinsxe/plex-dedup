@@ -5,6 +5,7 @@ Provides a visual interface for managing duplicates and subtitles.
 
 import logging
 import subprocess
+import threading
 from flask import Flask, render_template, jsonify, request
 
 from config import Config
@@ -48,6 +49,16 @@ sub_manager = SubtitleManager(config)
 analyzer = LibraryAnalyzer(config)
 current_plans: list[DeduplicationPlan] = []
 current_analysis: list[AnalysisResult] = []
+
+# Background task progress tracking
+scan_progress = {
+    "running": False,
+    "phase": "",  # "analyzing", "searching", "done", "error"
+    "current": 0,
+    "total": 0,
+    "current_title": "",
+    "error": None,
+}
 
 
 @app.route("/")
@@ -238,39 +249,90 @@ def api_subtitle_download():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/api/convert/scan", methods=["POST"])
-def api_convert_scan():
-    """Analyze library for Swedish subtitle availability."""
-    global current_analysis
+def _run_convert_scan(scan_type: str, limit: int):
+    """Background worker for convert scan + Prowlarr search."""
+    global current_analysis, scan_progress
 
-    data = request.json or {}
-    scan_type = data.get("scan_type", "movies")  # "movies", "tv", "all"
-    limit = data.get("limit", 0)
+    scan_progress.update({
+        "running": True, "phase": "analyzing", "current": 0,
+        "total": 0, "current_title": "Starting...", "error": None,
+    })
+
+    def on_progress(current, total, title):
+        scan_progress.update({
+            "current": current, "total": total, "current_title": title,
+        })
 
     results = []
     try:
         if scan_type in ("movies", "all"):
+            scan_progress["current_title"] = f"Scanning {config.plex_movie_library}..."
             res = analyzer.analyze_library(
                 config.plex_movie_library, "movie", limit=limit,
+                progress_callback=on_progress,
             )
             results.extend(res)
 
         if scan_type in ("tv", "all"):
+            scan_progress["current_title"] = f"Scanning {config.plex_tv_library}..."
+            scan_progress["current"] = 0
             res = analyzer.analyze_library(
                 config.plex_tv_library, "show", limit=limit,
+                progress_callback=on_progress,
             )
             results.extend(res)
 
         current_analysis = results
-        summary = LibraryAnalyzer.get_summary(results)
-        return jsonify({
-            "ok": True,
-            "summary": summary,
-            "results": [r.to_dict() for r in results[:200]],
+
+        # Auto-search Prowlarr for items needing replacement
+        needs = [r for r in results if r.status == "needs_replacement"]
+        if needs:
+            scan_progress.update({
+                "phase": "searching", "current": 0,
+                "total": len(needs), "current_title": "Searching Prowlarr...",
+            })
+            analyzer.search_replacements(results)
+
+        scan_progress.update({
+            "phase": "done", "running": False,
+            "current_title": "Complete",
         })
+
     except Exception as e:
         logger.error(f"Convert scan failed: {e}", exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        scan_progress.update({
+            "phase": "error", "running": False, "error": str(e),
+        })
+
+
+@app.route("/api/convert/scan", methods=["POST"])
+def api_convert_scan():
+    """Start library analysis in background."""
+    if scan_progress["running"]:
+        return jsonify({"ok": False, "error": "Scan already in progress"})
+
+    data = request.json or {}
+    scan_type = data.get("scan_type", "movies")
+    limit = data.get("limit", 0)
+
+    thread = threading.Thread(
+        target=_run_convert_scan, args=(scan_type, limit), daemon=True,
+    )
+    thread.start()
+    return jsonify({"ok": True, "message": "Scan started"})
+
+
+@app.route("/api/convert/progress")
+def api_convert_progress():
+    """Get current scan progress."""
+    result = dict(scan_progress)
+
+    if scan_progress["phase"] == "done" and current_analysis:
+        summary = LibraryAnalyzer.get_summary(current_analysis)
+        result["summary"] = summary
+        result["results"] = [r.to_dict() for r in current_analysis[:200]]
+
+    return jsonify(result)
 
 
 @app.route("/api/convert/search", methods=["POST"])

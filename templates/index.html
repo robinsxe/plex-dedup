@@ -88,6 +88,10 @@
         .sub-lang-tag.missing { background: var(--danger); color: #fff; }
         .sub-lang-tag.exists { background: var(--surface2); color: var(--text-dim); }
 
+        .progress-bar { background: var(--surface2); border-radius: 6px; height: 24px; overflow: hidden; margin: 12px 0; position: relative; }
+        .progress-fill { height: 100%; background: var(--accent); border-radius: 6px; transition: width 0.3s ease; min-width: 2px; }
+        .progress-text { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--text); }
+
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: var(--radius); color: #fff; font-size: 14px; z-index: 1000; opacity: 0; transition: opacity 0.3s; }
@@ -230,7 +234,6 @@
                     <option value="100">Analyze 100 items</option>
                 </select>
                 <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
-                <button class="purple" id="btn-conv-search" onclick="convertSearch()" style="display:none;">🔎 Search Prowlarr</button>
                 <button class="danger" id="btn-conv-execute" onclick="convertExecute()" style="display:none;">📥 Grab Releases</button>
                 <div style="flex:1;"></div>
                 <label class="toggle"><input type="checkbox" id="conv-dry-run" checked> Dry Run</label>
@@ -455,32 +458,93 @@ async function downloadSubtitles() {
 }
 
 // ---- Convert ----
+let convPollTimer = null;
+
 async function convertScan() {
     const btn=document.getElementById('btn-conv-scan');
     btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Analyzing...';
+    document.getElementById('btn-conv-search').style.display='none';
+    document.getElementById('btn-conv-execute').style.display='none';
+
+    // Show progress bar
+    const cont=document.getElementById('conv-results');
+    cont.innerHTML=`<div class="card">
+        <div style="margin-bottom:8px;font-weight:500;" id="conv-progress-label">Starting analysis...</div>
+        <div class="progress-bar"><div class="progress-fill" id="conv-progress-fill" style="width:0%"></div>
+        <div class="progress-text" id="conv-progress-text">0%</div></div>
+        <div style="font-size:13px;color:var(--text-dim);" id="conv-progress-title"></div>
+    </div>`;
+
     try {
         const resp=await fetch('/api/convert/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
             scan_type:document.getElementById('conv-scan-type').value,
             limit:parseInt(document.getElementById('conv-limit').value)||0,
         })});
         const data=await resp.json();
-        if(!data.ok){toast('Analysis failed: '+data.error,'error');return;}
-        const s=data.summary;
-        document.getElementById('conv-stats-row').style.display='grid';
-        document.getElementById('conv-stat-total').textContent=s.total_scanned;
-        document.getElementById('conv-stat-hassubs').textContent=s.has_subs;
-        document.getElementById('conv-stat-replace').textContent=s.needs_replacement;
-        document.getElementById('conv-stat-nosubs').textContent=s.no_subs_available;
-        document.getElementById('conv-stat-nordic').textContent=s.nordic_available;
-        document.getElementById('conv-stat-prowlarr').textContent=s.prowlarr_results_found;
+        if(!data.ok){toast('Analysis failed: '+data.error,'error');btn.disabled=false;btn.innerHTML='🔍 Analyze Library';return;}
 
-        renderConvertResults(data.results||[]);
+        // Start polling for progress
+        convPollTimer = setInterval(pollConvertProgress, 1000);
+    } catch(e){toast('Error: '+e.message,'error');btn.disabled=false;btn.innerHTML='🔍 Analyze Library';}
+}
 
-        if(s.needs_replacement>0){
-            document.getElementById('btn-conv-search').style.display='';
+async function pollConvertProgress() {
+    try {
+        const resp=await fetch('/api/convert/progress');
+        const p=await resp.json();
+
+        const fill=document.getElementById('conv-progress-fill');
+        const text=document.getElementById('conv-progress-text');
+        const label=document.getElementById('conv-progress-label');
+        const title=document.getElementById('conv-progress-title');
+
+        if(!fill) return; // UI changed
+
+        const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+
+        if(p.phase==='analyzing') {
+            label.textContent=`Analyzing library... (${p.current}/${p.total})`;
+            fill.style.width=pct+'%';
+            text.textContent=pct+'%';
+            title.textContent=p.current_title||'';
+        } else if(p.phase==='searching') {
+            label.textContent=`Searching Prowlarr for replacements...`;
+            fill.style.width='100%';
+            fill.style.background='var(--purple)';
+            text.textContent='Searching indexers...';
+            title.textContent=p.current_title||'';
+        } else if(p.phase==='done') {
+            clearInterval(convPollTimer);
+            convPollTimer=null;
+
+            const btn=document.getElementById('btn-conv-scan');
+            btn.disabled=false; btn.innerHTML='🔍 Analyze Library';
+
+            if(p.summary) {
+                const s=p.summary;
+                document.getElementById('conv-stats-row').style.display='grid';
+                document.getElementById('conv-stat-total').textContent=s.total_scanned;
+                document.getElementById('conv-stat-hassubs').textContent=s.has_subs;
+                document.getElementById('conv-stat-replace').textContent=s.needs_replacement;
+                document.getElementById('conv-stat-nosubs').textContent=s.no_subs_available;
+                document.getElementById('conv-stat-nordic').textContent=s.nordic_available;
+                document.getElementById('conv-stat-prowlarr').textContent=s.prowlarr_results_found;
+
+                renderConvertResults(p.results||[]);
+
+                if(s.prowlarr_results_found>0){
+                    document.getElementById('btn-conv-execute').style.display='';
+                }
+                toast(`Analysis complete: ${s.needs_replacement} need replacement, ${s.prowlarr_results_found} found on indexers`,'info');
+            }
+        } else if(p.phase==='error') {
+            clearInterval(convPollTimer);
+            convPollTimer=null;
+            const btn=document.getElementById('btn-conv-scan');
+            btn.disabled=false; btn.innerHTML='🔍 Analyze Library';
+            toast('Analysis failed: '+(p.error||'Unknown error'),'error');
         }
-        toast(`Analysis complete: ${s.needs_replacement} need replacement, ${s.has_subs} can download subs directly`,'info');
-    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='🔍 Analyze Library';}
+    } catch(e) { /* ignore poll errors */ }
 }
 
 function renderConvertResults(results) {
@@ -520,26 +584,6 @@ function renderConvertResults(results) {
             <div class="dup-details" id="conv-details-${idx}">${details}</div>
         </div>`;
     }).join('');
-}
-
-async function convertSearch() {
-    const btn=document.getElementById('btn-conv-search');
-    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Searching Prowlarr...';
-    try {
-        const resp=await fetch('/api/convert/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
-        const data=await resp.json();
-        if(!data.ok){toast('Search failed: '+data.error,'error');return;}
-        const s=data.summary;
-        document.getElementById('conv-stat-prowlarr').textContent=s.prowlarr_results_found;
-
-        if(s.prowlarr_results_found>0){
-            document.getElementById('btn-conv-execute').style.display='';
-        }
-
-        // Re-render with prowlarr results
-        if(data.needs_replacement){renderConvertResults(data.needs_replacement);}
-        toast(`Found ${s.prowlarr_results_found} releases on indexers`,'info');
-    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='🔎 Search Prowlarr';}
 }
 
 async function convertExecute() {
