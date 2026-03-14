@@ -452,28 +452,60 @@ class LibraryAnalyzer:
             if not result.recommended_release:
                 continue
 
+            # Build a search query from the movie/show title + year
+            # (full release names like "Movie.2024.1080p.WEB-DL-Group" are too specific)
+            search_query = result.title
+            if result.year:
+                search_query = f"{result.title} {result.year}"
+            elif result.show_title:
+                search_query = result.show_title
+
             logger.info(
                 f"[{idx}/{len(needs_replacement)}] "
-                f"Searching: {result.recommended_release}"
+                f"Searching Prowlarr for: {search_query} "
+                f"(want: {result.recommended_release})"
             )
 
             try:
-                prowlarr_results = self.prowlarr.search_release(
-                    result.recommended_release,
-                    result.media_type,
+                media_search_type = "movie" if result.media_type == "movie" else "tv"
+                all_results = self.prowlarr.search_release(
+                    search_query,
+                    media_search_type,
                 )
-                result.prowlarr_results = prowlarr_results or []
 
-                if prowlarr_results:
-                    logger.info(
-                        f"  Found {len(prowlarr_results)} result(s) on Prowlarr"
-                    )
-                else:
+                if not all_results:
                     logger.info(f"  No results found on Prowlarr")
+                    result.prowlarr_results = []
+                    continue
+
+                # Score results: prefer matches to the recommended release name
+                recommended_lower = result.recommended_release.lower()
+                nordic_results = []
+                matching_results = []
+                other_results = []
+
+                for r in all_results:
+                    title = (r.get("title") or "").lower()
+                    if recommended_lower and recommended_lower in title:
+                        matching_results.append(r)
+                    elif self._is_nordic_release(r.get("title", "")):
+                        nordic_results.append(r)
+                    else:
+                        other_results.append(r)
+
+                # Priority: exact match > nordic release > everything else
+                ranked = matching_results + nordic_results + other_results
+                result.prowlarr_results = ranked
+
+                logger.info(
+                    f"  Found {len(ranked)} result(s) "
+                    f"({len(matching_results)} matching, "
+                    f"{len(nordic_results)} NORDIC)"
+                )
 
             except Exception as e:
                 logger.error(
-                    f"Prowlarr search failed for {result.recommended_release}: {e}"
+                    f"Prowlarr search failed for {search_query}: {e}"
                 )
                 result.prowlarr_results = []
 
