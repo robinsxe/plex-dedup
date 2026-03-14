@@ -454,11 +454,14 @@ class LibraryAnalyzer:
 
             # Build a search query from the movie/show title + year
             # (full release names like "Movie.2024.1080p.WEB-DL-Group" are too specific)
-            search_query = result.title
-            if result.year:
+            if result.media_type == "episode" and result.show_title:
+                season = result.season_number or 0
+                episode = result.episode_number or 0
+                search_query = f"{result.show_title} S{season:02d}E{episode:02d}"
+            elif result.year:
                 search_query = f"{result.title} {result.year}"
-            elif result.show_title:
-                search_query = result.show_title
+            else:
+                search_query = result.title
 
             logger.info(
                 f"[{idx}/{len(needs_replacement)}] "
@@ -535,10 +538,8 @@ class LibraryAnalyzer:
             return False
 
         best_result = result.prowlarr_results[0]
-        guid = best_result.get("guid", "")
-        indexer_id = best_result.get("indexerId") or best_result.get("indexer_id")
         release_title = best_result.get("title", result.recommended_release)
-        download_url = best_result.get("downloadUrl") or best_result.get("guid", "")
+        download_url = best_result.get("downloadUrl", "")
         protocol = best_result.get("protocol", "usenet").lower()
         publish_date = best_result.get("publishDate", "")
         indexer_name = best_result.get("indexer", "Prowlarr")

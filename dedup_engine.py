@@ -120,11 +120,11 @@ class DedupEngine:
     def _score_file(self, media_file: MediaFile) -> float:
         score = 0.0
 
-        # Swedish subtitle bonus — massively prioritize files with Swedish subs
+        # Swedish subtitle bonus — prioritize files with Swedish subs
         if media_file.has_swedish_sub:
-            score += 10000
+            score += 10000  # Confirmed Swedish sub — always wins
         elif self._nordic_pattern.search(os.path.basename(media_file.file_path)):
-            score += 10000
+            score += 5000  # Likely has subs (NORDIC/SWE tag) — strong preference
 
         res_rank = self._parse_resolution_rank(media_file.resolution)
         score += (res_rank / 2160) * 100

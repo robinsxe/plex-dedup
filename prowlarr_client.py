@@ -32,12 +32,6 @@ class ProwlarrClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _post(self, endpoint: str, data: dict) -> dict | list:
-        """Send a POST request to the Prowlarr API."""
-        resp = self.session.post(f"{self.url}/api/v1/{endpoint}", json=data)
-        resp.raise_for_status()
-        return resp.json()
-
     def test_connection(self) -> bool:
         """Test connection to Prowlarr."""
         try:
@@ -47,16 +41,6 @@ class ProwlarrClient:
         except Exception as e:
             logger.error(f"Failed to connect to Prowlarr: {e}")
             return False
-
-    def get_indexers(self) -> list[dict]:
-        """Get all configured indexers from Prowlarr."""
-        try:
-            indexers = self._get("indexer")
-            logger.info(f"Found {len(indexers)} configured indexers")
-            return indexers
-        except Exception as e:
-            logger.error(f"Failed to get indexers: {e}")
-            return []
 
     def search(
         self,
@@ -99,32 +83,6 @@ class ProwlarrClient:
         except Exception as e:
             logger.error(f"Search failed for '{query}': {e}")
             return []
-
-    def grab(self, guid: str, indexer_id: int) -> bool:
-        """
-        Grab a release and push it to the download client.
-
-        Args:
-            guid: The GUID of the release to grab.
-            indexer_id: The indexer ID the release came from.
-
-        Returns:
-            True if the grab was successful, False otherwise.
-        """
-        try:
-            # Prowlarr grab endpoint: GET /api/v1/indexer/{id}/download?link={guid}
-            resp = self.session.get(
-                f"{self.url}/api/v1/indexer/{indexer_id}/download",
-                params={"link": guid},
-            )
-            resp.raise_for_status()
-            logger.info(f"Grabbed release from indexer {indexer_id}")
-            return True
-        except Exception as e:
-            logger.error(
-                f"Failed to grab release from indexer {indexer_id}: {e}"
-            )
-            return False
 
     def search_release(
         self, release_name: str, media_type: str = "movie"

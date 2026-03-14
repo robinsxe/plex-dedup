@@ -51,6 +51,7 @@ current_plans: list[DeduplicationPlan] = []
 current_analysis: list[AnalysisResult] = []
 
 # Background task progress tracking
+scan_lock = threading.Lock()
 scan_progress = {
     "running": False,
     "phase": "",  # "analyzing", "searching", "done", "error"
@@ -251,22 +252,25 @@ def api_subtitle_download():
 
 def _run_convert_scan(scan_type: str, limit: int):
     """Background worker for convert scan + Prowlarr search."""
-    global current_analysis, scan_progress
+    global current_analysis
 
-    scan_progress.update({
-        "running": True, "phase": "analyzing", "current": 0,
-        "total": 0, "current_title": "Starting...", "error": None,
-    })
-
-    def on_progress(current, total, title):
+    with scan_lock:
         scan_progress.update({
-            "current": current, "total": total, "current_title": title,
+            "running": True, "phase": "analyzing", "current": 0,
+            "total": 0, "current_title": "Starting...", "error": None,
         })
 
-    results = []
+    def on_progress(current, total, title):
+        with scan_lock:
+            scan_progress.update({
+                "current": current, "total": total, "current_title": title,
+            })
+
     try:
+        results = []
         if scan_type in ("movies", "all"):
-            scan_progress["current_title"] = f"Scanning {config.plex_movie_library}..."
+            with scan_lock:
+                scan_progress["current_title"] = f"Scanning {config.plex_movie_library}..."
             res = analyzer.analyze_library(
                 config.plex_movie_library, "movie", limit=limit,
                 progress_callback=on_progress,
@@ -274,8 +278,9 @@ def _run_convert_scan(scan_type: str, limit: int):
             results.extend(res)
 
         if scan_type in ("tv", "all"):
-            scan_progress["current_title"] = f"Scanning {config.plex_tv_library}..."
-            scan_progress["current"] = 0
+            with scan_lock:
+                scan_progress["current_title"] = f"Scanning {config.plex_tv_library}..."
+                scan_progress["current"] = 0
             res = analyzer.analyze_library(
                 config.plex_tv_library, "show", limit=limit,
                 progress_callback=on_progress,
@@ -287,29 +292,34 @@ def _run_convert_scan(scan_type: str, limit: int):
         # Auto-search Prowlarr for items needing replacement
         needs = [r for r in results if r.status == "needs_replacement"]
         if needs:
-            scan_progress.update({
-                "phase": "searching", "current": 0,
-                "total": len(needs), "current_title": "Searching Prowlarr...",
-            })
+            with scan_lock:
+                scan_progress.update({
+                    "phase": "searching", "current": 0,
+                    "total": len(needs), "current_title": "Searching Prowlarr...",
+                })
             analyzer.search_replacements(results)
 
-        scan_progress.update({
-            "phase": "done", "running": False,
-            "current_title": "Complete",
-        })
+        with scan_lock:
+            scan_progress.update({
+                "phase": "done", "running": False,
+                "current_title": "Complete",
+            })
 
     except Exception as e:
         logger.error(f"Convert scan failed: {e}", exc_info=True)
-        scan_progress.update({
-            "phase": "error", "running": False, "error": str(e),
-        })
+        with scan_lock:
+            scan_progress.update({
+                "phase": "error", "running": False, "error": str(e),
+            })
 
 
 @app.route("/api/convert/scan", methods=["POST"])
 def api_convert_scan():
     """Start library analysis in background."""
-    if scan_progress["running"]:
-        return jsonify({"ok": False, "error": "Scan already in progress"})
+    with scan_lock:
+        if scan_progress["running"]:
+            return jsonify({"ok": False, "error": "Scan already in progress"}), 409
+        scan_progress["running"] = True
 
     data = request.json or {}
     scan_type = data.get("scan_type", "movies")
@@ -325,9 +335,11 @@ def api_convert_scan():
 @app.route("/api/convert/progress")
 def api_convert_progress():
     """Get current scan progress."""
-    result = dict(scan_progress)
+    with scan_lock:
+        result = dict(scan_progress)
 
-    if scan_progress["phase"] == "done" and current_analysis:
+    result["ok"] = True
+    if result["phase"] == "done" and current_analysis:
         summary = LibraryAnalyzer.get_summary(current_analysis)
         result["summary"] = summary
         result["results"] = [r.to_dict() for r in current_analysis[:200]]

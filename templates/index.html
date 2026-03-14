@@ -463,7 +463,6 @@ let convPollTimer = null;
 async function convertScan() {
     const btn=document.getElementById('btn-conv-scan');
     btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Analyzing...';
-    document.getElementById('btn-conv-search').style.display='none';
     document.getElementById('btn-conv-execute').style.display='none';
 
     // Show progress bar
