@@ -25,6 +25,11 @@ class SonarrClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _post(self, endpoint: str, data: dict) -> dict | list:
+        resp = self.session.post(f"{self.url}/api/v3/{endpoint}", json=data)
+        resp.raise_for_status()
+        return resp.json()
+
     def _put(self, endpoint: str, data: dict) -> dict:
         resp = self.session.put(f"{self.url}/api/v3/{endpoint}", json=data)
         resp.raise_for_status()
@@ -177,4 +182,25 @@ class SonarrClient:
             return self._delete(f"episodefile/{episode_file_id}")
         except Exception as e:
             logger.error(f"Failed to delete episode file {episode_file_id}: {e}")
+            return False
+
+    def push_release(self, title: str, download_url: str, protocol: str,
+                     publish_date: str, indexer: str) -> bool:
+        """
+        Push an external release to Sonarr for download.
+        Sonarr handles the full lifecycle: download, import, and old file cleanup.
+        """
+        try:
+            self._post("release/push", {
+                "title": title,
+                "downloadUrl": download_url,
+                "protocol": protocol,
+                "publishDate": publish_date,
+                "source": "Prowlarr",
+                "indexer": indexer,
+            })
+            logger.info(f"Pushed release to Sonarr: {title}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to push release to Sonarr: {e}")
             return False

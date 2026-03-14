@@ -32,6 +32,7 @@ class MediaFile:
     season_number: int | None = None
     episode_number: int | None = None
     media_type: str = "movie"  # "movie" or "episode"
+    has_swedish_sub: bool = False
 
     @property
     def file_size_gb(self) -> float:
@@ -79,6 +80,7 @@ class MediaFile:
             "episode_number": self.episode_number,
             "media_type": self.media_type,
             "display_title": self.display_title,
+            "has_swedish_sub": self.has_swedish_sub,
         }
 
 
@@ -221,6 +223,7 @@ class PlexClient:
             season_number=season_num,
             episode_number=episode_num,
             media_type=media_type,
+            has_swedish_sub=self._has_subtitle(part, "sv"),
         )
 
     def _get_guids(self, item) -> dict:

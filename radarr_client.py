@@ -25,6 +25,11 @@ class RadarrClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _post(self, endpoint: str, data: dict) -> dict | list:
+        resp = self.session.post(f"{self.url}/api/v3/{endpoint}", json=data)
+        resp.raise_for_status()
+        return resp.json()
+
     def _put(self, endpoint: str, data: dict) -> dict:
         resp = self.session.put(f"{self.url}/api/v3/{endpoint}", json=data)
         resp.raise_for_status()
@@ -155,6 +160,37 @@ class RadarrClient:
         except Exception as e:
             logger.warning(f"Could not get files for movie {movie_id}: {e}")
             return []
+
+    def push_release(self, title: str, download_url: str, protocol: str,
+                     publish_date: str, indexer: str) -> bool:
+        """
+        Push an external release to Radarr for download.
+        Radarr handles the full lifecycle: download, import, and old file cleanup.
+
+        Args:
+            title: Release title (e.g., 'Movie.2024.1080p.WEB-DL.SWESUB-Group')
+            download_url: Direct download URL or magnet link
+            protocol: 'usenet' or 'torrent'
+            publish_date: ISO 8601 date string
+            indexer: Indexer name
+
+        Returns:
+            True if the push was accepted.
+        """
+        try:
+            self._post("release/push", {
+                "title": title,
+                "downloadUrl": download_url,
+                "protocol": protocol,
+                "publishDate": publish_date,
+                "source": "Prowlarr",
+                "indexer": indexer,
+            })
+            logger.info(f"Pushed release to Radarr: {title}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to push release to Radarr: {e}")
+            return False
 
     def get_quality_profile(self, profile_id: int) -> dict | None:
         """Get a quality profile by ID."""

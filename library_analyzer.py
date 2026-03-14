@@ -13,6 +13,8 @@ from config import Config
 from plex_client import PlexClient
 from opensubtitles_client import OpenSubtitlesClient
 from prowlarr_client import ProwlarrClient
+from radarr_client import RadarrClient
+from sonarr_client import SonarrClient
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,8 @@ class LibraryAnalyzer:
             config.opensubtitles_password,
         )
         self.prowlarr = ProwlarrClient(config.prowlarr_url, config.prowlarr_api_key)
+        self.radarr = RadarrClient(config.radarr_url, config.radarr_api_key)
+        self.sonarr = SonarrClient(config.sonarr_url, config.sonarr_api_key)
         self._nordic_pattern = _build_nordic_pattern(config.subtitle_match_tags)
 
     # ------------------------------------------------------------------ #
@@ -502,35 +506,54 @@ class LibraryAnalyzer:
         guid = best_result.get("guid", "")
         indexer_id = best_result.get("indexerId") or best_result.get("indexer_id")
         release_title = best_result.get("title", result.recommended_release)
+        download_url = best_result.get("downloadUrl") or best_result.get("guid", "")
+        protocol = best_result.get("protocol", "usenet").lower()
+        publish_date = best_result.get("publishDate", "")
+        indexer_name = best_result.get("indexer", "Prowlarr")
 
-        if not guid or indexer_id is None:
+        if not download_url:
             logger.warning(
-                f"Missing guid or indexer_id for {result.display_title} — skipping"
+                f"Missing download URL for {result.display_title} — skipping"
             )
             return False
 
         if dry_run:
             logger.info(
-                f"[DRY RUN] Would grab: {release_title} "
-                f"for {result.display_title}"
+                f"[DRY RUN] Would push to {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
+                f"{release_title} for {result.display_title}"
             )
             return True
 
         try:
-            logger.info(f"Grabbing: {release_title} for {result.display_title}")
-            success = self.prowlarr.grab(guid, indexer_id)
+            # Push through Radarr/Sonarr so they manage the full lifecycle:
+            # download → import → old file cleanup
+            if result.media_type == "movie":
+                logger.info(f"Pushing to Radarr: {release_title}")
+                success = self.radarr.push_release(
+                    release_title, download_url, protocol, publish_date, indexer_name,
+                )
+            else:
+                logger.info(f"Pushing to Sonarr: {release_title}")
+                success = self.sonarr.push_release(
+                    release_title, download_url, protocol, publish_date, indexer_name,
+                )
+
             if not success:
                 result.status = "error"
-                result.error = "Grab returned failure"
-                logger.error(f"Grab failed for {release_title}")
+                result.error = "Release push returned failure"
+                logger.error(f"Push failed for {release_title}")
                 return False
+
             result.status = "replaced"
-            logger.info(f"Successfully pushed to download client: {release_title}")
+            logger.info(
+                f"Successfully pushed to {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
+                f"{release_title}"
+            )
             return True
         except Exception as e:
             result.status = "error"
-            result.error = f"Grab failed: {e}"
-            logger.error(f"Failed to grab {release_title}: {e}")
+            result.error = f"Push failed: {e}"
+            logger.error(f"Failed to push {release_title}: {e}")
             return False
 
     def execute_all(

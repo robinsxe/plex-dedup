@@ -13,6 +13,7 @@ from config import Config
 from plex_client import PlexClient, DuplicateGroup, MediaFile
 from radarr_client import RadarrClient
 from sonarr_client import SonarrClient
+from library_analyzer import _build_nordic_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class DedupEngine:
         self.radarr = RadarrClient(config.radarr_url, config.radarr_api_key)
         self.sonarr = SonarrClient(config.sonarr_url, config.sonarr_api_key)
         self._plans: list[DeduplicationPlan] = []
+        self._nordic_pattern = _build_nordic_pattern(config.subtitle_match_tags)
 
     def test_connections(self) -> dict:
         results = {
@@ -117,6 +119,12 @@ class DedupEngine:
 
     def _score_file(self, media_file: MediaFile) -> float:
         score = 0.0
+
+        # Swedish subtitle bonus — massively prioritize files with Swedish subs
+        if media_file.has_swedish_sub:
+            score += 10000
+        elif self._nordic_pattern.search(os.path.basename(media_file.file_path)):
+            score += 10000
 
         res_rank = self._parse_resolution_rank(media_file.resolution)
         score += (res_rank / 2160) * 100
