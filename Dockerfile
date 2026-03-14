@@ -15,11 +15,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Bake version at build time (before COPY to bust cache)
+ARG BUILD_VERSION=unknown
+
 # Copy application
 COPY . .
 
-# Bake version at build time
-ARG BUILD_VERSION=unknown
+# Write version file (after COPY so it overwrites any local VERSION file)
 RUN echo "${BUILD_VERSION}" > /app/VERSION
 
 # Create data directory for logs
