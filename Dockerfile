@@ -18,6 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY . .
 
+# Bake version at build time
+ARG BUILD_VERSION=unknown
+RUN echo "${BUILD_VERSION}" > /app/VERSION
+
 # Create data directory for logs
 RUN mkdir -p /data/logs
 

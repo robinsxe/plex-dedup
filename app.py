@@ -4,6 +4,7 @@ Provides a visual interface for managing duplicates and subtitles.
 """
 
 import logging
+import subprocess
 from flask import Flask, render_template, jsonify, request
 
 from config import Config
@@ -18,6 +19,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# App version — resolved once at startup
+def _get_version() -> str:
+    # Docker build bakes the full SHA into /app/VERSION
+    try:
+        with open("VERSION") as f:
+            v = f.read().strip()
+            if v and v != "unknown":
+                return v[:7]
+    except FileNotFoundError:
+        pass
+    # Local dev — use git
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+APP_VERSION = _get_version()
 
 # Global state
 config = Config.from_env()
@@ -68,6 +90,7 @@ def api_status():
 
     return jsonify({
         "ok": connections.get("plex", False),
+        "version": APP_VERSION,
         "plex_connected": connections.get("plex", False),
         "radarr_connected": connections.get("radarr", False),
         "sonarr_connected": connections.get("sonarr", False),

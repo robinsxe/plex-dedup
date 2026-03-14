@@ -107,7 +107,7 @@
 <body>
 <div class="container">
     <header>
-        <h1>🎬 Plex <span>Dedup</span></h1>
+        <h1>🎬 Plex <span>Dedup</span> <span id="app-version" style="font-size:12px;color:var(--text-dim);font-weight:400;"></span></h1>
         <div class="status-badges">
             <span class="status-badge"><span class="status-dot" id="plex-dot"></span> Plex</span>
             <span class="status-badge"><span class="status-dot" id="radarr-dot"></span> Radarr</span>
@@ -266,6 +266,7 @@ async function init() {
     try {
         const resp = await fetch('/api/status');
         const data = await resp.json();
+        if (data.version) document.getElementById('app-version').textContent = 'v' + data.version;
         document.getElementById('plex-dot').className = 'status-dot ' + (data.plex_connected ? 'ok' : 'err');
         document.getElementById('radarr-dot').className = 'status-dot ' + (data.radarr_connected ? 'ok' : 'err');
         document.getElementById('sonarr-dot').className = 'status-dot ' + (data.sonarr_connected ? 'ok' : 'err');
