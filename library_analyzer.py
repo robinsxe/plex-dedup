@@ -424,14 +424,41 @@ class LibraryAnalyzer:
     # Prowlarr search
     # ------------------------------------------------------------------ #
 
+    def _build_radarr_index(self) -> dict:
+        """Build lookup index for Radarr movies by TMDB/IMDB ID."""
+        index = {}
+        try:
+            for movie in self.radarr.get_all_movies():
+                tmdb = str(movie.get("tmdbId", ""))
+                imdb = movie.get("imdbId", "")
+                if tmdb:
+                    index[f"tmdb:{tmdb}"] = movie
+                if imdb:
+                    index[f"imdb:{imdb}"] = movie
+        except Exception as e:
+            logger.warning(f"Could not fetch Radarr movies: {e}")
+        return index
+
+    def _find_in_radarr(self, result: AnalysisResult, index: dict) -> dict | None:
+        """Find a movie in Radarr index by TMDB/IMDB ID."""
+        if result.tmdb_id:
+            entry = index.get(f"tmdb:{result.tmdb_id}")
+            if entry:
+                return entry
+        if result.imdb_id:
+            entry = index.get(f"imdb:{result.imdb_id}")
+            if entry:
+                return entry
+        return None
+
     def search_replacements(
         self, results: list[AnalysisResult], limit: int = 0,
         progress_callback=None,
     ) -> list[AnalysisResult]:
         """
-        For items that need replacement, search Prowlarr for the
-        recommended release. Updates prowlarr_results on each
-        AnalysisResult.
+        For items that need replacement, search Radarr/Sonarr indexers
+        for available releases. Uses the *arr interactive search API
+        which queries all configured indexers (synced from Prowlarr).
 
         Args:
             results: List of AnalysisResult from analyze_library
@@ -447,7 +474,12 @@ class LibraryAnalyzer:
             needs_replacement = needs_replacement[:limit]
 
         total = len(needs_replacement)
-        logger.info(f"Searching Prowlarr for {total} replacement releases")
+        logger.info(f"Searching indexers for {total} replacement releases")
+
+        # Build Radarr index for movie lookups
+        logger.info("Building Radarr movie index...")
+        radarr_index = self._build_radarr_index()
+        logger.info(f"Radarr index: {len(radarr_index)} entries")
 
         for idx, result in enumerate(needs_replacement, start=1):
             if not result.recommended_release:
@@ -459,35 +491,37 @@ class LibraryAnalyzer:
                 except Exception:
                     pass
 
-            # Build a search query from the movie/show title + year
-            if result.media_type == "episode" and result.show_title:
-                season = result.season_number or 0
-                episode = result.episode_number or 0
-                search_query = f"{result.show_title} S{season:02d}E{episode:02d}"
-            elif result.year:
-                search_query = f"{result.title} {result.year}"
-            else:
-                search_query = result.title
-
             logger.info(
                 f"[{idx}/{total}] "
-                f"Searching Prowlarr for: {search_query} "
+                f"Searching indexers for: {result.display_title} "
                 f"(want: {result.recommended_release})"
             )
 
             try:
-                media_search_type = "movie" if result.media_type == "movie" else "tv"
-                all_results = self.prowlarr.search_release(
-                    search_query,
-                    media_search_type,
-                )
+                all_results = []
 
-                if not all_results:
-                    logger.info(f"  No results found on Prowlarr")
+                if result.media_type == "movie":
+                    # Find the movie in Radarr to get its internal ID
+                    radarr_movie = self._find_in_radarr(result, radarr_index)
+                    if not radarr_movie:
+                        logger.info(f"  Not found in Radarr — skipping")
+                        result.prowlarr_results = []
+                        continue
+                    movie_id = radarr_movie["id"]
+                    all_results = self.radarr.search_releases(movie_id)
+                else:
+                    # For TV, find in Sonarr
+                    # TODO: implement Sonarr episode search
+                    logger.info(f"  TV search not yet implemented via Sonarr")
                     result.prowlarr_results = []
                     continue
 
-                # Score results: prefer matches to the recommended release name
+                if not all_results:
+                    logger.info(f"  No releases found on indexers")
+                    result.prowlarr_results = []
+                    continue
+
+                # Score results: prefer NORDIC/SWE releases
                 recommended_lower = result.recommended_release.lower()
                 nordic_results = []
                 matching_results = []
@@ -507,14 +541,14 @@ class LibraryAnalyzer:
                 result.prowlarr_results = ranked
 
                 logger.info(
-                    f"  Found {len(ranked)} result(s) "
+                    f"  Found {len(ranked)} release(s) "
                     f"({len(matching_results)} matching, "
                     f"{len(nordic_results)} NORDIC)"
                 )
 
             except Exception as e:
                 logger.error(
-                    f"Prowlarr search failed for {search_query}: {e}"
+                    f"Search failed for {result.display_title}: {e}"
                 )
                 result.prowlarr_results = []
 
@@ -526,7 +560,8 @@ class LibraryAnalyzer:
 
     def execute_replacement(self, result: AnalysisResult, dry_run: bool = True) -> bool:
         """
-        Execute a single replacement by grabbing the release via Prowlarr.
+        Execute a single replacement by grabbing the release via Radarr/Sonarr.
+        Uses the same grab mechanism as clicking "download" in the Radarr/Sonarr UI.
 
         In dry_run mode, just logs what would happen.
         """
@@ -538,61 +573,53 @@ class LibraryAnalyzer:
 
         if not result.prowlarr_results:
             logger.warning(
-                f"No Prowlarr results for {result.display_title}  —  "
+                f"No indexer results for {result.display_title}  —  "
                 f"run search_replacements first"
             )
             return False
 
         best_result = result.prowlarr_results[0]
         release_title = best_result.get("title", result.recommended_release)
-        download_url = best_result.get("downloadUrl", "")
-        protocol = best_result.get("protocol", "usenet").lower()
-        publish_date = best_result.get("publishDate", "")
-        indexer_name = best_result.get("indexer", "Prowlarr")
+        guid = best_result.get("guid", "")
+        indexer_id = best_result.get("indexerId") or best_result.get("indexer_id")
 
-        if not download_url:
+        if not guid or indexer_id is None:
             logger.warning(
-                f"Missing download URL for {result.display_title} — skipping"
+                f"Missing guid or indexer_id for {result.display_title} — skipping"
             )
             return False
 
         if dry_run:
             logger.info(
-                f"[DRY RUN] Would push to {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
+                f"[DRY RUN] Would grab via {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
                 f"{release_title} for {result.display_title}"
             )
             return True
 
         try:
-            # Push through Radarr/Sonarr so they manage the full lifecycle:
-            # download → import → old file cleanup
             if result.media_type == "movie":
-                logger.info(f"Pushing to Radarr: {release_title}")
-                success = self.radarr.push_release(
-                    release_title, download_url, protocol, publish_date, indexer_name,
-                )
+                logger.info(f"Grabbing via Radarr: {release_title}")
+                success = self.radarr.grab_release(guid, indexer_id)
             else:
-                logger.info(f"Pushing to Sonarr: {release_title}")
-                success = self.sonarr.push_release(
-                    release_title, download_url, protocol, publish_date, indexer_name,
-                )
+                logger.info(f"Grabbing via Sonarr: {release_title}")
+                success = self.sonarr.grab_release(guid, indexer_id)
 
             if not success:
                 result.status = "error"
-                result.error = "Release push returned failure"
-                logger.error(f"Push failed for {release_title}")
+                result.error = "Grab returned failure"
+                logger.error(f"Grab failed for {release_title}")
                 return False
 
             result.status = "replaced"
             logger.info(
-                f"Successfully pushed to {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
+                f"Successfully grabbed via {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
                 f"{release_title}"
             )
             return True
         except Exception as e:
             result.status = "error"
-            result.error = f"Push failed: {e}"
-            logger.error(f"Failed to push {release_title}: {e}")
+            result.error = f"Grab failed: {e}"
+            logger.error(f"Failed to grab {release_title}: {e}")
             return False
 
     def execute_all(

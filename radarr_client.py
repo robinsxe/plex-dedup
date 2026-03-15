@@ -192,6 +192,45 @@ class RadarrClient:
             logger.error(f"Failed to push release to Radarr: {e}")
             return False
 
+    def search_releases(self, movie_id: int) -> list[dict]:
+        """
+        Search all indexers for available releases of a movie.
+        This uses Radarr's interactive search (same as clicking Search in the UI).
+
+        Args:
+            movie_id: Radarr internal movie ID.
+
+        Returns:
+            List of available releases from all configured indexers.
+        """
+        try:
+            results = self._get("release", params={"movieId": movie_id})
+            logger.info(f"Radarr found {len(results)} releases for movie {movie_id}")
+            return results
+        except Exception as e:
+            logger.error(f"Radarr release search failed for movie {movie_id}: {e}")
+            return []
+
+    def grab_release(self, guid: str, indexer_id: int) -> bool:
+        """
+        Grab a specific release for download. Radarr handles the full
+        lifecycle: download, import, and old file replacement.
+
+        Args:
+            guid: Release GUID from search_releases results.
+            indexer_id: Indexer ID from the release.
+
+        Returns:
+            True if the grab was accepted.
+        """
+        try:
+            self._post("release", {"guid": guid, "indexerId": indexer_id})
+            logger.info(f"Radarr grabbed release {guid}")
+            return True
+        except Exception as e:
+            logger.error(f"Radarr grab failed: {e}")
+            return False
+
     def get_quality_profile(self, profile_id: int) -> dict | None:
         """Get a quality profile by ID."""
         try:

@@ -184,6 +184,32 @@ class SonarrClient:
             logger.error(f"Failed to delete episode file {episode_file_id}: {e}")
             return False
 
+    def search_releases(self, episode_id: int) -> list[dict]:
+        """
+        Search all indexers for available releases of an episode.
+        Uses Sonarr's interactive search.
+        """
+        try:
+            results = self._get("release", params={"episodeId": episode_id})
+            logger.info(f"Sonarr found {len(results)} releases for episode {episode_id}")
+            return results
+        except Exception as e:
+            logger.error(f"Sonarr release search failed for episode {episode_id}: {e}")
+            return []
+
+    def grab_release(self, guid: str, indexer_id: int) -> bool:
+        """
+        Grab a specific release for download. Sonarr handles the full
+        lifecycle: download, import, and old file replacement.
+        """
+        try:
+            self._post("release", {"guid": guid, "indexerId": indexer_id})
+            logger.info(f"Sonarr grabbed release {guid}")
+            return True
+        except Exception as e:
+            logger.error(f"Sonarr grab failed: {e}")
+            return False
+
     def push_release(self, title: str, download_url: str, protocol: str,
                      publish_date: str, indexer: str) -> bool:
         """
