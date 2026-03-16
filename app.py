@@ -354,6 +354,7 @@ def api_convert_progress():
         result = dict(scan_progress)
 
     result["ok"] = True
+    result["grabbed_count"] = analyzer.grab_tracker.count
     if result["phase"] == "done" and current_analysis:
         summary = LibraryAnalyzer.get_summary(current_analysis)
         result["summary"] = summary
@@ -408,6 +409,18 @@ def api_convert_execute():
     except Exception as e:
         logger.error(f"Convert execute failed: {e}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/convert/grabbed", methods=["GET", "DELETE"])
+def api_convert_grabbed():
+    """View or clear the grabbed items tracker."""
+    if request.method == "DELETE":
+        count = analyzer.grab_tracker.clear()
+        return jsonify({"ok": True, "cleared": count})
+    return jsonify({
+        "ok": True,
+        "count": analyzer.grab_tracker.count,
+    })
 
 
 @app.route("/api/config", methods=["GET", "PUT"])

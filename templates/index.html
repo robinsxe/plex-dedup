@@ -243,6 +243,8 @@
                 </select>
                 <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
                 <button class="danger" id="btn-conv-execute" onclick="convertExecute()" style="display:none;">📥 Grab Releases</button>
+                <button id="btn-conv-clear" onclick="clearGrabbed()" style="display:none;">🗑 Clear Grabbed</button>
+                <span id="conv-grabbed-count" style="font-size:13px;color:var(--text-dim);"></span>
                 <div style="flex:1;"></div>
                 <label class="toggle"><input type="checkbox" id="conv-dry-run" checked> Dry Run</label>
             </div>
@@ -543,6 +545,7 @@ async function pollConvertProgress() {
                 if(s.prowlarr_results_found>0){
                     document.getElementById('btn-conv-execute').style.display='';
                 }
+                if(p.grabbed_count) updateGrabbedCount(p.grabbed_count);
                 toast(`Analysis complete: ${s.needs_replacement} need replacement, ${s.prowlarr_results_found} found on indexers`,'info');
             }
         } else if(p.phase==='error') {
@@ -592,6 +595,27 @@ function renderConvertResults(results) {
             <div class="dup-details" id="conv-details-${idx}">${details}</div>
         </div>`;
     }).join('');
+}
+
+function updateGrabbedCount(count) {
+    const el=document.getElementById('conv-grabbed-count');
+    const btn=document.getElementById('btn-conv-clear');
+    if(count>0){
+        el.textContent=`${count} previously grabbed (skipped)`;
+        btn.style.display='';
+    } else {
+        el.textContent='';
+        btn.style.display='none';
+    }
+}
+
+async function clearGrabbed() {
+    if(!confirm('Clear all grabbed items? They will be re-analyzed on the next scan.'))return;
+    try {
+        const resp=await fetch('/api/convert/grabbed',{method:'DELETE'});
+        const data=await resp.json();
+        if(data.ok){toast(`Cleared ${data.cleared} grabbed items`,'success');updateGrabbedCount(0);}
+    } catch(e){toast('Error: '+e.message,'error');}
 }
 
 async function convertExecute() {

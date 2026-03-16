@@ -6,7 +6,9 @@ available Swedish subtitle releases, and coordinates replacement via Prowlarr.
 
 import os
 import re
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 from config import Config
@@ -17,6 +19,70 @@ from radarr_client import RadarrClient
 from sonarr_client import SonarrClient
 
 logger = logging.getLogger(__name__)
+
+GRABBED_FILE = os.environ.get("GRABBED_DB", "/data/grabbed.json")
+
+
+class GrabTracker:
+    """Tracks which items have been grabbed to avoid re-downloading."""
+
+    def __init__(self, path: str = GRABBED_FILE):
+        self._path = path
+        self._data: dict[str, dict] = {}
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self._path) as f:
+                self._data = json.load(f)
+            logger.info(f"Loaded {len(self._data)} grabbed items from {self._path}")
+        except FileNotFoundError:
+            self._data = {}
+        except Exception as e:
+            logger.warning(f"Could not load grabbed DB: {e}")
+            self._data = {}
+
+    def _save(self):
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(self._path, "w") as f:
+                json.dump(self._data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Could not save grabbed DB: {e}")
+
+    def is_grabbed(self, imdb_id: str = None, tmdb_id: str = None,
+                   rating_key: str = None) -> bool:
+        """Check if an item was already grabbed."""
+        for key in [f"imdb:{imdb_id}", f"tmdb:{tmdb_id}", f"plex:{rating_key}"]:
+            if key and key.split(":", 1)[1] and key in self._data:
+                return True
+        return False
+
+    def mark_grabbed(self, result) -> None:
+        """Mark an AnalysisResult as grabbed."""
+        entry = {
+            "title": result.display_title,
+            "grabbed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "recommended_release": result.recommended_release,
+        }
+        if result.imdb_id:
+            self._data[f"imdb:{result.imdb_id}"] = entry
+        if result.tmdb_id:
+            self._data[f"tmdb:{result.tmdb_id}"] = entry
+        if result.rating_key:
+            self._data[f"plex:{result.rating_key}"] = entry
+        self._save()
+
+    def clear(self) -> int:
+        """Clear all grabbed items. Returns count cleared."""
+        count = len(self._data)
+        self._data = {}
+        self._save()
+        return count
+
+    @property
+    def count(self) -> int:
+        return len(self._data)
 
 
 def _build_nordic_pattern(tags: list[str]) -> re.Pattern:
@@ -127,6 +193,12 @@ class LibraryAnalyzer:
         self.radarr = RadarrClient(config.radarr_url, config.radarr_api_key)
         self.sonarr = SonarrClient(config.sonarr_url, config.sonarr_api_key)
         self._nordic_pattern = _build_nordic_pattern(config.subtitle_match_tags)
+        self.grab_tracker = GrabTracker()
+
+        # Max release size in GB (0 = no limit)
+        self._max_size_gb = float(os.environ.get("CONVERT_MAX_SIZE_GB", "25"))
+        # Rejected quality keywords (case-insensitive)
+        self._rejected_qualities = {"remux", "2160p", "4k", "uhd"}
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -308,9 +380,23 @@ class LibraryAnalyzer:
         logger.info(f"Found {len(all_items)} media files in library")
 
         missing_subs = [item for item in all_items if not item.get("has_swedish_sub")]
+
+        # Filter out already-grabbed items
+        before_filter = len(missing_subs)
+        missing_subs = [
+            item for item in missing_subs
+            if not self.grab_tracker.is_grabbed(
+                imdb_id=item.get("imdb_id"),
+                tmdb_id=item.get("tmdb_id"),
+                rating_key=item.get("rating_key"),
+            )
+        ]
+        skipped = before_filter - len(missing_subs)
+
         logger.info(
             f"{len(missing_subs)} items missing Swedish subtitles "
-            f"(out of {len(all_items)} total)"
+            f"(out of {len(all_items)} total"
+            f"{f', {skipped} already grabbed' if skipped else ''})"
         )
 
         if limit > 0:
@@ -521,6 +607,28 @@ class LibraryAnalyzer:
                     result.prowlarr_results = []
                     continue
 
+                # Filter out remux, 4K, and oversized releases
+                filtered = []
+                for r in all_results:
+                    title_lower = (r.get("title") or "").lower()
+                    size_gb = (r.get("size") or 0) / (1024 ** 3)
+
+                    # Reject by quality keywords
+                    if any(kw in title_lower for kw in self._rejected_qualities):
+                        continue
+                    # Reject by size
+                    if self._max_size_gb > 0 and size_gb > self._max_size_gb:
+                        continue
+                    filtered.append(r)
+
+                if not filtered and all_results:
+                    logger.info(
+                        f"  {len(all_results)} releases found but all filtered "
+                        f"(remux/4K/>{self._max_size_gb}GB)"
+                    )
+
+                all_results = filtered
+
                 # Score results: prefer NORDIC/SWE releases
                 recommended_lower = result.recommended_release.lower()
                 nordic_results = []
@@ -535,6 +643,30 @@ class LibraryAnalyzer:
                         nordic_results.append(r)
                     else:
                         other_results.append(r)
+
+                # Sort each group by quality preference
+                def _quality_score(r):
+                    t = (r.get("title") or "").lower()
+                    score = 0
+                    # Resolution preference
+                    if "1080p" in t:
+                        score += 100
+                    elif "720p" in t:
+                        score += 50
+                    # Source preference
+                    if "bluray" in t or "blu-ray" in t:
+                        score += 30
+                    elif "web-dl" in t or "webdl" in t:
+                        score += 20
+                    elif "webrip" in t:
+                        score += 15
+                    elif "hdtv" in t:
+                        score += 10
+                    return -score  # negative for ascending sort
+
+                matching_results.sort(key=_quality_score)
+                nordic_results.sort(key=_quality_score)
+                other_results.sort(key=_quality_score)
 
                 # Priority: exact match > nordic release > everything else
                 ranked = matching_results + nordic_results + other_results
@@ -611,6 +743,7 @@ class LibraryAnalyzer:
                 return False
 
             result.status = "replaced"
+            self.grab_tracker.mark_grabbed(result)
             logger.info(
                 f"Successfully grabbed via {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
                 f"{release_title}"
