@@ -69,6 +69,7 @@ services:
       - OPENSUBTITLES_PASSWORD=your-opensubtitles-password
       - SUBTITLE_LANGUAGES=sv,en
       - SUBTITLE_MATCH_TAGS=NORDIC,SWE,SWESUB,SWEDISH
+      - SKIP_EXPIRY_DAYS=30
 
       # ---- Behavior ---- ✅ Defaults are fine, change if needed
       - DRY_RUN=true

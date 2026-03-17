@@ -355,6 +355,7 @@ def api_convert_progress():
 
     result["ok"] = True
     result["grabbed_count"] = analyzer.grab_tracker.count
+    result["skipped_count"] = analyzer.skip_tracker.count
     if result["phase"] == "done" and current_analysis:
         summary = LibraryAnalyzer.get_summary(current_analysis)
         result["summary"] = summary
@@ -420,6 +421,18 @@ def api_convert_grabbed():
     return jsonify({
         "ok": True,
         "count": analyzer.grab_tracker.count,
+    })
+
+
+@app.route("/api/convert/skipped", methods=["GET", "DELETE"])
+def api_convert_skipped():
+    """View or clear the skipped items tracker."""
+    if request.method == "DELETE":
+        count = analyzer.skip_tracker.clear()
+        return jsonify({"ok": True, "cleared": count})
+    return jsonify({
+        "ok": True,
+        "count": analyzer.skip_tracker.count,
     })
 
 

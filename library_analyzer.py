@@ -21,6 +21,17 @@ from sonarr_client import SonarrClient
 logger = logging.getLogger(__name__)
 
 GRABBED_FILE = os.environ.get("GRABBED_DB", "/data/grabbed.json")
+SKIPPED_FILE = os.environ.get("SKIPPED_DB", "/data/skipped.json")
+
+def _parse_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+        return max(1, min(value, 365))
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid value for {name}, using default {default}")
+        return default
+
+SKIP_EXPIRY_DAYS = _parse_int_env("SKIP_EXPIRY_DAYS", 30)
 
 
 class GrabTracker:
@@ -75,6 +86,97 @@ class GrabTracker:
 
     def clear(self) -> int:
         """Clear all grabbed items. Returns count cleared."""
+        count = len(self._data)
+        self._data = {}
+        self._save()
+        return count
+
+    @property
+    def count(self) -> int:
+        return len(self._data)
+
+
+class SkipTracker:
+    """Tracks items where no indexer results were found, so they can be
+    skipped on subsequent scans. Entries expire after SKIP_EXPIRY_DAYS."""
+
+    def __init__(self, path: str = SKIPPED_FILE):
+        self._path = path
+        self._data: dict[str, dict] = {}
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self._path) as f:
+                self._data = json.load(f)
+            self._purge_expired()
+            logger.info(f"Loaded {len(self._data)} skipped items from {self._path}")
+        except FileNotFoundError:
+            self._data = {}
+        except Exception as e:
+            logger.warning(f"Could not load skipped DB: {e}")
+            self._data = {}
+
+    def _save(self):
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(self._path, "w") as f:
+                json.dump(self._data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Could not save skipped DB: {e}")
+
+    def _purge_expired(self):
+        """Remove entries older than SKIP_EXPIRY_DAYS."""
+        now = time.time()
+        cutoff = now - (SKIP_EXPIRY_DAYS * 86400)
+        before = len(self._data)
+        self._data = {
+            k: v for k, v in self._data.items()
+            if v.get("skipped_ts", 0) > cutoff
+        }
+        removed = before - len(self._data)
+        if removed:
+            logger.info(f"Purged {removed} expired skip entries (>{SKIP_EXPIRY_DAYS} days)")
+            self._save()
+
+    def is_skipped(self, imdb_id: str = None, tmdb_id: str = None,
+                   rating_key: str = None) -> bool:
+        """Check if an item was previously skipped."""
+        for key in [f"imdb:{imdb_id}", f"tmdb:{tmdb_id}", f"plex:{rating_key}"]:
+            if key and key.split(":", 1)[1] and key in self._data:
+                return True
+        return False
+
+    def mark_skipped(self, result, reason: str = "no_indexer_results",
+                     defer_save: bool = False) -> None:
+        """Mark an AnalysisResult as skipped (no indexer results found).
+
+        Args:
+            result: The AnalysisResult to mark.
+            reason: Why it was skipped ("no_indexer_results" or "all_filtered").
+            defer_save: If True, don't write to disk — call flush() later.
+        """
+        entry = {
+            "title": result.display_title,
+            "skipped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "skipped_ts": time.time(),
+            "reason": reason,
+        }
+        if result.imdb_id:
+            self._data[f"imdb:{result.imdb_id}"] = entry
+        if result.tmdb_id:
+            self._data[f"tmdb:{result.tmdb_id}"] = entry
+        if result.rating_key:
+            self._data[f"plex:{result.rating_key}"] = entry
+        if not defer_save:
+            self._save()
+
+    def flush(self) -> None:
+        """Write pending changes to disk."""
+        self._save()
+
+    def clear(self) -> int:
+        """Clear all skipped items. Returns count cleared."""
         count = len(self._data)
         self._data = {}
         self._save()
@@ -194,6 +296,7 @@ class LibraryAnalyzer:
         self.sonarr = SonarrClient(config.sonarr_url, config.sonarr_api_key)
         self._nordic_pattern = _build_nordic_pattern(config.subtitle_match_tags)
         self.grab_tracker = GrabTracker()
+        self.skip_tracker = SkipTracker()
 
         # Max release size in GB (0 = no limit)
         self._max_size_gb = float(os.environ.get("CONVERT_MAX_SIZE_GB", "25"))
@@ -376,6 +479,9 @@ class LibraryAnalyzer:
         """
         logger.info(f"Starting library analysis: {library_name} ({library_type})")
 
+        # Enforce expiry on skip list for long-running containers
+        self.skip_tracker._purge_expired()
+
         all_items = self.plex.get_all_media_files(library_name, library_type)
         logger.info(f"Found {len(all_items)} media files in library")
 
@@ -391,12 +497,25 @@ class LibraryAnalyzer:
                 rating_key=item.get("rating_key"),
             )
         ]
-        skipped = before_filter - len(missing_subs)
+        grabbed_skipped = before_filter - len(missing_subs)
+
+        # Filter out items previously skipped (no indexer results)
+        before_skip_filter = len(missing_subs)
+        missing_subs = [
+            item for item in missing_subs
+            if not self.skip_tracker.is_skipped(
+                imdb_id=item.get("imdb_id"),
+                tmdb_id=item.get("tmdb_id"),
+                rating_key=item.get("rating_key"),
+            )
+        ]
+        skip_filtered = before_skip_filter - len(missing_subs)
 
         logger.info(
             f"{len(missing_subs)} items missing Swedish subtitles "
             f"(out of {len(all_items)} total"
-            f"{f', {skipped} already grabbed' if skipped else ''})"
+            f"{f', {grabbed_skipped} already grabbed' if grabbed_skipped else ''}"
+            f"{f', {skip_filtered} skipped (no indexer results)' if skip_filtered else ''})"
         )
 
         if limit > 0:
@@ -603,8 +722,10 @@ class LibraryAnalyzer:
                     continue
 
                 if not all_results:
-                    logger.info(f"  No releases found on indexers")
+                    logger.info(f"  No releases found on indexers — adding to skip list")
                     result.prowlarr_results = []
+                    self.skip_tracker.mark_skipped(
+                        result, reason="no_indexer_results", defer_save=True)
                     continue
 
                 # Filter out remux, 4K, and oversized releases
@@ -624,8 +745,10 @@ class LibraryAnalyzer:
                 if not filtered and all_results:
                     logger.info(
                         f"  {len(all_results)} releases found but all filtered "
-                        f"(remux/4K/>{self._max_size_gb}GB)"
+                        f"(remux/4K/>{self._max_size_gb}GB) — adding to skip list"
                     )
+                    self.skip_tracker.mark_skipped(
+                        result, reason="all_filtered", defer_save=True)
 
                 all_results = filtered
 
@@ -683,6 +806,9 @@ class LibraryAnalyzer:
                     f"Search failed for {result.display_title}: {e}"
                 )
                 result.prowlarr_results = []
+
+        # Flush any deferred skip entries to disk in one write
+        self.skip_tracker.flush()
 
         return results
 
