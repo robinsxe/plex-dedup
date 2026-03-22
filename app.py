@@ -356,6 +356,7 @@ def api_convert_progress():
     result["ok"] = True
     result["grabbed_count"] = analyzer.grab_tracker.count
     result["skipped_count"] = analyzer.skip_tracker.count
+    result["cooldown_count"] = analyzer.search_cooldown.count
     if result["phase"] == "done" and current_analysis:
         summary = LibraryAnalyzer.get_summary(current_analysis)
         result["summary"] = summary
@@ -433,6 +434,18 @@ def api_convert_skipped():
     return jsonify({
         "ok": True,
         "count": analyzer.skip_tracker.count,
+    })
+
+
+@app.route("/api/convert/cooldown", methods=["GET", "DELETE"])
+def api_convert_cooldown():
+    """View or clear the search cooldown tracker."""
+    if request.method == "DELETE":
+        count = analyzer.search_cooldown.clear()
+        return jsonify({"ok": True, "cleared": count})
+    return jsonify({
+        "ok": True,
+        "count": analyzer.search_cooldown.count,
     })
 
 

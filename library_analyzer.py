@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 GRABBED_FILE = os.environ.get("GRABBED_DB", "/data/grabbed.json")
 SKIPPED_FILE = os.environ.get("SKIPPED_DB", "/data/skipped.json")
+COOLDOWN_FILE = os.environ.get("COOLDOWN_DB", "/data/cooldown.json")
 
 def _parse_int_env(name: str, default: int) -> int:
     try:
@@ -32,6 +33,7 @@ def _parse_int_env(name: str, default: int) -> int:
         return default
 
 SKIP_EXPIRY_DAYS = _parse_int_env("SKIP_EXPIRY_DAYS", 30)
+SEARCH_COOLDOWN_DAYS = _parse_int_env("SEARCH_COOLDOWN_DAYS", 30)
 
 
 class GrabTracker:
@@ -187,6 +189,100 @@ class SkipTracker:
         return len(self._data)
 
 
+class SearchCooldownTracker:
+    """Tracks items that have been searched on indexers recently, so they
+    are not re-searched on every scan. Entries expire after
+    SEARCH_COOLDOWN_DAYS regardless of whether results were found."""
+
+    def __init__(self, path: str = COOLDOWN_FILE):
+        self._path = path
+        self._data: dict[str, dict] = {}
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self._path) as f:
+                self._data = json.load(f)
+            self._purge_expired()
+            logger.info(
+                f"Loaded {len(self._data)} cooldown items from {self._path}")
+        except FileNotFoundError:
+            self._data = {}
+        except Exception as e:
+            logger.warning(f"Could not load cooldown DB: {e}")
+            self._data = {}
+
+    def _save(self):
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(self._path, "w") as f:
+                json.dump(self._data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Could not save cooldown DB: {e}")
+
+    def _purge_expired(self):
+        now = time.time()
+        cutoff = now - (SEARCH_COOLDOWN_DAYS * 86400)
+        before = len(self._data)
+        self._data = {
+            k: v for k, v in self._data.items()
+            if v.get("ts", 0) > cutoff
+        }
+        removed = before - len(self._data)
+        if removed:
+            logger.info(
+                f"Purged {removed} expired cooldown entries "
+                f"(>{SEARCH_COOLDOWN_DAYS} days)")
+            self._save()
+
+    def _key(self, imdb_id=None, tmdb_id=None, rating_key=None):
+        """Return the best available lookup key."""
+        if imdb_id:
+            return f"imdb:{imdb_id}"
+        if tmdb_id:
+            return f"tmdb:{tmdb_id}"
+        if rating_key:
+            return f"plex:{rating_key}"
+        return None
+
+    def is_on_cooldown(self, imdb_id: str = None, tmdb_id: str = None,
+                       rating_key: str = None) -> bool:
+        """Check if an item was searched recently."""
+        for key in [f"imdb:{imdb_id}", f"tmdb:{tmdb_id}", f"plex:{rating_key}"]:
+            if key and key.split(":", 1)[1] and key in self._data:
+                return True
+        return False
+
+    def mark_searched(self, result, defer_save: bool = False) -> None:
+        """Mark an AnalysisResult as recently searched on indexers."""
+        entry = {
+            "title": result.display_title,
+            "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": time.time(),
+        }
+        if result.imdb_id:
+            self._data[f"imdb:{result.imdb_id}"] = entry
+        if result.tmdb_id:
+            self._data[f"tmdb:{result.tmdb_id}"] = entry
+        if result.rating_key:
+            self._data[f"plex:{result.rating_key}"] = entry
+        if not defer_save:
+            self._save()
+
+    def flush(self) -> None:
+        self._save()
+
+    def clear(self) -> int:
+        count = len(self._data)
+        self._data = {}
+        self._save()
+        return count
+
+    @property
+    def count(self) -> int:
+        return len(self._data)
+
+
 def _build_nordic_pattern(tags: list[str]) -> re.Pattern:
     """Build a regex that matches any of the given tags as whole tokens."""
     escaped = [re.escape(t) for t in tags]
@@ -297,6 +393,7 @@ class LibraryAnalyzer:
         self._nordic_pattern = _build_nordic_pattern(config.subtitle_match_tags)
         self.grab_tracker = GrabTracker()
         self.skip_tracker = SkipTracker()
+        self.search_cooldown = SearchCooldownTracker()
 
         # Max release size in GB (0 = no limit)
         self._max_size_gb = float(os.environ.get("CONVERT_MAX_SIZE_GB", "25"))
@@ -479,8 +576,9 @@ class LibraryAnalyzer:
         """
         logger.info(f"Starting library analysis: {library_name} ({library_type})")
 
-        # Enforce expiry on skip list for long-running containers
+        # Enforce expiry on trackers for long-running containers
         self.skip_tracker._purge_expired()
+        self.search_cooldown._purge_expired()
 
         all_items = self.plex.get_all_media_files(library_name, library_type)
         logger.info(f"Found {len(all_items)} media files in library")
@@ -511,11 +609,24 @@ class LibraryAnalyzer:
         ]
         skip_filtered = before_skip_filter - len(missing_subs)
 
+        # Filter out items on search cooldown (recently searched)
+        before_cooldown = len(missing_subs)
+        missing_subs = [
+            item for item in missing_subs
+            if not self.search_cooldown.is_on_cooldown(
+                imdb_id=item.get("imdb_id"),
+                tmdb_id=item.get("tmdb_id"),
+                rating_key=item.get("rating_key"),
+            )
+        ]
+        cooldown_filtered = before_cooldown - len(missing_subs)
+
         logger.info(
             f"{len(missing_subs)} items missing Swedish subtitles "
             f"(out of {len(all_items)} total"
             f"{f', {grabbed_skipped} already grabbed' if grabbed_skipped else ''}"
-            f"{f', {skip_filtered} skipped (no indexer results)' if skip_filtered else ''})"
+            f"{f', {skip_filtered} skipped (no indexer results)' if skip_filtered else ''}"
+            f"{f', {cooldown_filtered} on search cooldown' if cooldown_filtered else ''})"
         )
 
         if limit > 0:
@@ -749,6 +860,10 @@ class LibraryAnalyzer:
                     )
                     self.skip_tracker.mark_skipped(
                         result, reason="all_filtered", defer_save=True)
+                    result.prowlarr_results = []
+                    self.search_cooldown.mark_searched(
+                        result, defer_save=True)
+                    continue
 
                 all_results = filtered
 
@@ -807,8 +922,12 @@ class LibraryAnalyzer:
                 )
                 result.prowlarr_results = []
 
-        # Flush any deferred skip entries to disk in one write
+            # Mark as recently searched (cooldown) regardless of outcome
+            self.search_cooldown.mark_searched(result, defer_save=True)
+
+        # Flush deferred entries to disk in one write
         self.skip_tracker.flush()
+        self.search_cooldown.flush()
 
         return results
 
