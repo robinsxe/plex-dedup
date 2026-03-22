@@ -23,15 +23,25 @@ app = Flask(__name__)
 
 # App version — resolved once at startup
 def _get_version() -> str:
-    # Docker build bakes the full SHA into /app/VERSION
+    # Docker build bakes version into /app/VERSION (tag like v1.2.0 or SHA)
     try:
         with open("VERSION") as f:
             v = f.read().strip()
             if v and v != "unknown":
-                return v[:7]
+                # If it's a tag (e.g. v1.2.0), return as-is; otherwise shorten SHA
+                return v if v.startswith("v") else v[:7]
     except FileNotFoundError:
         pass
-    # Local dev — use git
+    # Local dev — prefer tag if HEAD is tagged, otherwise short SHA
+    try:
+        tag = subprocess.check_output(
+            ["git", "describe", "--tags", "--exact-match", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if tag:
+            return tag
+    except Exception:
+        pass
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],

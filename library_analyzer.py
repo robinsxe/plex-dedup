@@ -801,6 +801,17 @@ class LibraryAnalyzer:
             if not result.recommended_release:
                 continue
 
+            # Skip items already on search cooldown
+            if self.search_cooldown.is_on_cooldown(
+                imdb_id=result.imdb_id,
+                tmdb_id=result.tmdb_id,
+                rating_key=result.rating_key,
+            ):
+                logger.info(
+                    f"[{idx}/{total}] {result.display_title} "
+                    f"— on search cooldown, skipping")
+                continue
+
             if progress_callback:
                 try:
                     progress_callback(idx, total, result.display_title)
@@ -822,6 +833,8 @@ class LibraryAnalyzer:
                     if not radarr_movie:
                         logger.info(f"  Not found in Radarr — skipping")
                         result.prowlarr_results = []
+                        self.search_cooldown.mark_searched(
+                            result, defer_save=True)
                         continue
                     movie_id = radarr_movie["id"]
                     all_results = self.radarr.search_releases(movie_id)
@@ -830,6 +843,8 @@ class LibraryAnalyzer:
                     # TODO: implement Sonarr episode search
                     logger.info(f"  TV search not yet implemented via Sonarr")
                     result.prowlarr_results = []
+                    self.search_cooldown.mark_searched(
+                        result, defer_save=True)
                     continue
 
                 if not all_results:
@@ -837,6 +852,8 @@ class LibraryAnalyzer:
                     result.prowlarr_results = []
                     self.skip_tracker.mark_skipped(
                         result, reason="no_indexer_results", defer_save=True)
+                    self.search_cooldown.mark_searched(
+                        result, defer_save=True)
                     continue
 
                 # Filter out remux, 4K, and oversized releases
