@@ -712,6 +712,9 @@ class LibraryAnalyzer:
             )
             results.append(result)
 
+            # Mark as recently analyzed so it's skipped on the next scan
+            self.search_cooldown.mark_searched(result, defer_save=True)
+
             if swedish_sub_available:
                 logger.info(
                     f"  Found {len(matches)} Swedish sub release(s)"
@@ -725,6 +728,9 @@ class LibraryAnalyzer:
         needs_count = sum(1 for r in results if r.status == "needs_replacement")
         none_count = sum(1 for r in results if r.status == "no_subs_available")
         error_count = sum(1 for r in results if r.status == "error")
+
+        # Flush cooldown entries written during analysis
+        self.search_cooldown.flush()
 
         logger.info(
             f"Analysis complete: {len(results)} items analyzed  —  "
