@@ -210,6 +210,98 @@ class SubtitleManager:
 
         return results
 
+    def download_for_items(
+        self,
+        items: list[dict],
+        languages: list[str] = None,
+        dry_run: bool = None,
+        limit: int = 0,
+    ) -> list[SubtitleResult]:
+        """
+        Download subtitles for pre-identified media items (e.g. from
+        LibraryAnalyzer results with status 'has_subs').
+
+        Unlike download_subtitles(), this skips the Plex scan and accepts
+        items directly.
+
+        Args:
+            items: List of dicts with file_path, media_type, title, etc.
+            languages: Language codes to download (default from config).
+            dry_run: Override config dry_run setting.
+            limit: Max items to process (0 = unlimited).
+
+        Returns:
+            List of SubtitleResult for processed items.
+        """
+        langs = languages or self.config.subtitle_languages
+        is_dry_run = dry_run if dry_run is not None else self.config.dry_run
+
+        if limit > 0:
+            items = items[:limit]
+
+        results = []
+        total = len(items)
+
+        for i, item in enumerate(items, 1):
+            if item.get("media_type") == "episode":
+                display = (
+                    f"{item.get('show_title', '')} "
+                    f"S{item.get('season_number', 0):02d}"
+                    f"E{item.get('episode_number', 0):02d}"
+                )
+            else:
+                display = f"{item.get('title', '')} ({item.get('year', '')})"
+
+            logger.info(f"[{i}/{total}] Downloading subs for: {display}")
+
+            try:
+                sub_result = self.opensubs.process_media_item(
+                    file_path=item.get("file_path", ""),
+                    languages=langs,
+                    imdb_id=item.get("imdb_id"),
+                    tmdb_id=item.get("tmdb_id"),
+                    media_type=item.get("media_type", "movie"),
+                    season_number=item.get("season_number"),
+                    episode_number=item.get("episode_number"),
+                    title=item.get("show_title") or item.get("title"),
+                    dry_run=is_dry_run,
+                )
+            except Exception as e:
+                logger.error(f"[{i}/{total}] Failed to process {display}: {e}")
+                sub_result = {
+                    lang: {"status": "error", "error": str(e)} for lang in langs
+                }
+
+            result = SubtitleResult(
+                title=item.get("title", ""),
+                display_title=display,
+                file_path=item.get("file_path", ""),
+                media_type=item.get("media_type", "movie"),
+                languages=sub_result,
+            )
+            results.append(result)
+
+        self._results = results
+
+        downloaded = sum(1 for r in results if r.any_downloaded)
+        logger.info(f"Subtitle download complete: {downloaded} downloaded out of {total}")
+
+        if not is_dry_run and downloaded > 0:
+            libraries_to_refresh = set()
+            for item in items:
+                if item.get("media_type") == "episode":
+                    libraries_to_refresh.add(self.config.plex_tv_library)
+                else:
+                    libraries_to_refresh.add(self.config.plex_movie_library)
+            for lib in libraries_to_refresh:
+                try:
+                    logger.info(f"Refreshing Plex library '{lib}'...")
+                    self.plex.refresh_library(lib)
+                except Exception as e:
+                    logger.warning(f"Failed to refresh library '{lib}': {e}")
+
+        return results
+
     def get_summary(self, results: list[SubtitleResult] = None) -> dict:
         """Get summary statistics."""
         results = results or self._results

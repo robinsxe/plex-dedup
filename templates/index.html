@@ -124,8 +124,8 @@
     <!-- Tabs -->
     <div class="tabs">
         <div class="tab active" onclick="switchTab('dedup')">🗂 Deduplication</div>
-        <div class="tab" onclick="switchTab('subtitles')">🗒 Subtitles</div>
-        <div class="tab" onclick="switchTab('convert')">🇸🇪 Swedish Convert</div>
+        <div class="tab" onclick="switchTab('swedish')">🇸🇪 Swedish Subtitles</div>
+        <div class="tab" onclick="switchTab('logs')">📋 Logs</div>
     </div>
 
     <!-- ======================== DEDUP TAB ======================== -->
@@ -169,48 +169,8 @@
         </div>
     </div>
 
-    <!-- ======================== SUBTITLES TAB ======================== -->
-    <div class="tab-content" id="tab-subtitles">
-        <div class="stats" id="sub-stats-row" style="display:none;">
-            <div class="stat"><div class="stat-value" id="sub-stat-total">0</div><div class="stat-label">Items Processed</div></div>
-            <div class="stat"><div class="stat-value purple" id="sub-stat-downloaded">0</div><div class="stat-label">Downloaded</div></div>
-            <div class="stat"><div class="stat-value" id="sub-stat-found">0</div><div class="stat-label">Found (Dry Run)</div></div>
-            <div class="stat"><div class="stat-value" id="sub-stat-missing">0</div><div class="stat-label">Not Available</div></div>
-            <div class="stat"><div class="stat-value" id="sub-stat-exist">0</div><div class="stat-label">Already Exist</div></div>
-        </div>
-
-        <div class="card">
-            <div class="controls">
-                <select id="sub-scan-type">
-                    <option value="all">All Libraries</option>
-                    <option value="movies">Movies Only</option>
-                    <option value="tv">TV Shows Only</option>
-                </select>
-                <select id="sub-limit">
-                    <option value="25">Process 25 items</option>
-                    <option value="50" selected>Process 50 items</option>
-                    <option value="100">Process 100 items</option>
-                    <option value="250">Process 250 items</option>
-                    <option value="0">Process all</option>
-                </select>
-                <button class="primary" onclick="scanSubtitles()">🔍 Scan Missing Subtitles</button>
-                <button class="purple" id="btn-sub-download" onclick="downloadSubtitles()">📥 Download Swedish Subtitles</button>
-                <div style="flex:1;"></div>
-                <span style="font-size:13px; color:var(--text-dim);">Languages: <strong id="sub-languages">sv</strong></span>
-            </div>
-        </div>
-
-        <div id="sub-results">
-            <div class="empty-state">
-                <div class="icon">🗒</div>
-                <p>Click <strong>Scan Missing Subtitles</strong> to find media without Swedish subtitles.</p>
-                <p style="margin-top:8px; font-size:13px;">Uses OpenSubtitles.com API to search and download .srt files.</p>
-            </div>
-        </div>
-    </div>
-
-    <!-- ======================== CONVERT TAB ======================== -->
-    <div class="tab-content" id="tab-convert">
+    <!-- ======================== SWEDISH SUBTITLES TAB ======================== -->
+    <div class="tab-content" id="tab-swedish">
         <div class="stats" id="conv-stats-row" style="display:none;">
             <div class="stat"><div class="stat-value" id="conv-stat-total">0</div><div class="stat-label">Scanned</div></div>
             <div class="stat"><div class="stat-value" id="conv-stat-hassubs" style="color:var(--success);">0</div><div class="stat-label">Subs Available</div></div>
@@ -218,6 +178,7 @@
             <div class="stat"><div class="stat-value" id="conv-stat-nosubs">0</div><div class="stat-label">No Subs Anywhere</div></div>
             <div class="stat"><div class="stat-value purple" id="conv-stat-nordic">0</div><div class="stat-label">NORDIC Available</div></div>
             <div class="stat"><div class="stat-value" id="conv-stat-prowlarr">0</div><div class="stat-label">Found on Indexers</div></div>
+            <div class="stat"><div class="stat-value purple" id="conv-stat-downloaded">0</div><div class="stat-label">Subs Downloaded</div></div>
         </div>
 
         <div class="card">
@@ -242,7 +203,9 @@
                     <option value="-1">Skip Prowlarr search</option>
                 </select>
                 <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
+                <button class="purple" id="btn-conv-download-subs" onclick="downloadAnalysisSubs()" style="display:none;">📥 Download Subs</button>
                 <button class="danger" id="btn-conv-execute" onclick="convertExecute()" style="display:none;">📥 Grab Releases</button>
+                <button class="danger" id="btn-cancel-scan" onclick="cancelScan()" style="display:none;">✕ Cancel Scan</button>
                 <button id="btn-conv-clear" onclick="clearGrabbed()" style="display:none;">🗑 Clear Grabbed</button>
                 <button id="btn-conv-clear-skipped" onclick="clearSkipped()" style="display:none;">🗑 Clear Skipped</button>
                 <button id="btn-conv-clear-cooldown" onclick="clearCooldown()" style="display:none;">🗑 Clear Cooldown</button>
@@ -258,8 +221,28 @@
             <div class="empty-state">
                 <div class="icon">🇸🇪</div>
                 <p>Click <strong>Analyze Library</strong> to find movies & shows missing Swedish subtitles.</p>
-                <p style="margin-top:8px; font-size:13px;">Checks OpenSubtitles for which releases have Swedish subs, then searches Prowlarr for replacements.</p>
+                <p style="margin-top:8px; font-size:13px;">Items with subs available get .srt downloads. Items without get replacement releases via Prowlarr.</p>
             </div>
+        </div>
+    </div>
+
+    <!-- ======================== LOGS TAB ======================== -->
+    <div class="tab-content" id="tab-logs">
+        <div class="card">
+            <div class="controls">
+                <select id="log-level-filter">
+                    <option value="">All Levels</option>
+                    <option value="ERROR">ERROR</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="INFO">INFO</option>
+                    <option value="DEBUG">DEBUG</option>
+                </select>
+                <button class="primary" onclick="loadLogs()">🔄 Refresh Logs</button>
+                <label class="toggle"><input type="checkbox" id="log-auto-refresh" onchange="toggleLogAutoRefresh()"> Auto-refresh</label>
+            </div>
+        </div>
+        <div id="log-entries" style="font-family:'SF Mono','Fira Code',monospace; font-size:12px; max-height:600px; overflow-y:auto; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px;">
+            <div class="empty-state"><p>Click <strong>Refresh</strong> to load logs.</p></div>
         </div>
     </div>
 </div>
@@ -294,7 +277,7 @@ async function init() {
             document.getElementById('strategy-select').value = data.config.keep_strategy;
             document.getElementById('dry-run-toggle').checked = data.config.dry_run;
             document.getElementById('unmonitor-toggle').checked = data.config.auto_unmonitor;
-            document.getElementById('sub-languages').textContent = (data.config.subtitle_languages || ['sv']).join(', ');
+            // Config loaded
         }
         if (!data.ok) toast('Connection issues detected — check settings', 'error');
     } catch (e) { toast('Cannot connect to backend: ' + e.message, 'error'); }
@@ -424,60 +407,15 @@ async function executeSingle(key) {
     try{const resp=await fetch(`/api/execute/${key}`,{method:'POST'}); const data=await resp.json(); toast(data.ok?(dry?'Dry run complete':'Duplicates removed!'):'Failed: '+(data.error||'Unknown'),data.ok?'success':'error'); if(data.ok&&!dry)setTimeout(scan,2000);}catch(e){toast('Error: '+e.message,'error');}
 }
 
-// ---- Subtitles ----
-async function scanSubtitles() {
-    const btn=event.target; btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Scanning...';
-    try {
-        const resp=await fetch('/api/subtitles/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scan_type:document.getElementById('sub-scan-type').value})});
-        const data=await resp.json();
-        if(!data.ok){toast('Scan failed: '+data.error,'error');return;}
-        const cont=document.getElementById('sub-results');
-        if(data.total_missing===0){cont.innerHTML='<div class="empty-state"><div class="icon">✅</div><p>All media has Swedish subtitles!</p></div>';toast('No missing subtitles','success');return;}
-        cont.innerHTML=`<div class="card"><p style="margin-bottom:12px;"><strong>${data.total_missing}</strong> items missing subtitles.</p>${data.items.slice(0,100).map(item=>{
-            const t=item.media_type==='episode'?`${item.show_title||''} S${String(item.season_number||0).padStart(2,'0')}E${String(item.episode_number||0).padStart(2,'0')}`:`${item.title} (${item.year||''})`;
-            return `<div class="sub-item"><span class="title">${esc(t)}</span>${(item.missing_languages||[]).map(l=>`<span class="sub-lang-tag missing">${l} missing</span>`).join('')}</div>`;
-        }).join('')}${data.total_missing>100?`<p style="margin-top:12px;color:var(--text-dim);">Showing 100 of ${data.total_missing} items.</p>`:''}</div>`;
-        toast(`${data.total_missing} items missing subtitles`,'info');
-    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='🔍 Scan Missing Subtitles';}
-}
-
-async function downloadSubtitles() {
-    const btn=document.getElementById('btn-sub-download'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Downloading...';
-    await updateConfig();
-    try {
-        const resp=await fetch('/api/subtitles/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scan_type:document.getElementById('sub-scan-type').value,limit:parseInt(document.getElementById('sub-limit').value)||0})});
-        const data=await resp.json();
-        if(!data.ok){toast('Download failed: '+data.error,'error');return;}
-        const s=data.summary;
-        document.getElementById('sub-stats-row').style.display='grid';
-        document.getElementById('sub-stat-total').textContent=s.total_items_processed;
-        document.getElementById('sub-stat-downloaded').textContent=s.subtitles_downloaded;
-        document.getElementById('sub-stat-found').textContent=s.subtitles_found_dry_run;
-        document.getElementById('sub-stat-missing').textContent=s.subtitles_not_available;
-        document.getElementById('sub-stat-exist').textContent=s.subtitles_already_exist;
-
-        const cont=document.getElementById('sub-results');
-        const results=data.results||[];
-        cont.innerHTML=`<div class="card">${results.map(r=>{
-            const langTags=Object.entries(r.languages).map(([lang,info])=>{
-                const cls={downloaded:'downloaded',found:'found',exists:'exists',not_found:'missing'}[info.status]||'missing';
-                const label={downloaded:'✅ '+lang,found:'🔍 '+lang,exists:'✓ '+lang,not_found:'✗ '+lang}[info.status]||info.status;
-                return `<span class="sub-lang-tag ${cls}">${label}</span>`;
-            }).join(' ');
-            return `<div class="sub-item"><span class="title">${esc(r.display_title)}</span>${langTags}</div>`;
-        }).join('')}</div>`;
-        const dry=document.getElementById('dry-run-toggle').checked;
-        toast(dry?`Dry run: ${s.subtitles_found_dry_run} subtitles found`:`Downloaded ${s.subtitles_downloaded} subtitles`,s.subtitles_downloaded>0||s.subtitles_found_dry_run>0?'success':'info');
-    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Download Swedish Subtitles';}
-}
-
-// ---- Convert ----
+// ---- Swedish Subtitles ----
 let convPollTimer = null;
 
 async function convertScan() {
     const btn=document.getElementById('btn-conv-scan');
     btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Analyzing...';
     document.getElementById('btn-conv-execute').style.display='none';
+    document.getElementById('btn-conv-download-subs').style.display='none';
+    document.getElementById('btn-cancel-scan').style.display='';
 
     // Show progress bar
     const cont=document.getElementById('conv-results');
@@ -530,6 +468,7 @@ async function pollConvertProgress() {
         } else if(p.phase==='done') {
             clearInterval(convPollTimer);
             convPollTimer=null;
+            document.getElementById('btn-cancel-scan').style.display='none';
 
             const btn=document.getElementById('btn-conv-scan');
             btn.disabled=false; btn.innerHTML='🔍 Analyze Library';
@@ -546,20 +485,24 @@ async function pollConvertProgress() {
 
                 renderConvertResults(p.results||[]);
 
+                if(s.has_subs>0){
+                    document.getElementById('btn-conv-download-subs').style.display='';
+                }
                 if(s.prowlarr_results_found>0){
                     document.getElementById('btn-conv-execute').style.display='';
                 }
                 if(p.grabbed_count) updateGrabbedCount(p.grabbed_count);
                 updateSkippedCount(p.skipped_count||0);
                 updateCooldownCount(p.cooldown_count||0);
-                toast(`Analysis complete: ${s.needs_replacement} need replacement, ${s.prowlarr_results_found} found on indexers`,'info');
+                toast(`Analysis complete: ${s.has_subs} can download subs, ${s.needs_replacement} need replacement, ${s.prowlarr_results_found} found on indexers`,'info');
             }
-        } else if(p.phase==='error') {
+        } else if(p.phase==='error' || p.phase==='cancelled') {
             clearInterval(convPollTimer);
             convPollTimer=null;
+            document.getElementById('btn-cancel-scan').style.display='none';
             const btn=document.getElementById('btn-conv-scan');
             btn.disabled=false; btn.innerHTML='🔍 Analyze Library';
-            toast('Analysis failed: '+(p.error||'Unknown error'),'error');
+            toast(p.phase==='cancelled'?'Scan cancelled':'Analysis failed: '+(p.error||'Unknown error'), p.phase==='cancelled'?'info':'error');
         }
     } catch(e) { /* ignore poll errors */ }
 }
@@ -588,7 +531,7 @@ function renderConvertResults(results) {
                 ${r.matching_releases&&r.matching_releases.length>0?`<div style="margin-top:8px;color:var(--text-dim);">${r.matching_releases.length} release(s) with Swedish subs on OpenSubtitles</div>`:''}
             </div>`;
         } else if(r.status==='has_subs') {
-            details=`<div style="margin-top:8px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px;color:var(--success);">Swedish subtitle available for your current release — use the Subtitles tab to download it.</div>`;
+            details=`<div style="margin-top:8px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px;color:var(--success);">Swedish subtitle available for your current release — click <strong>Download Subs</strong> above to download .srt files for all eligible items.</div>`;
         }
 
         return `<div class="dup-item">
@@ -680,6 +623,63 @@ async function convertExecute() {
         const r=data.result;
         toast(dry?`Dry run: would grab ${r.success} release(s)`:`Grabbed ${r.success} release(s), ${r.failed} failed, ${r.skipped} skipped`,r.failed>0?'error':'success');
     } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Grab Releases';}
+}
+
+// ---- Cancel Scan ----
+async function cancelScan() {
+    try {
+        await fetch('/api/convert/cancel',{method:'POST'});
+        if(convPollTimer){clearInterval(convPollTimer);convPollTimer=null;}
+        document.getElementById('btn-cancel-scan').style.display='none';
+        const btn=document.getElementById('btn-conv-scan');
+        btn.disabled=false; btn.innerHTML='🔍 Analyze Library';
+        toast('Scan cancelled','info');
+    } catch(e){toast('Error cancelling: '+e.message,'error');}
+}
+
+// ---- Download Subs for has_subs items ----
+async function downloadAnalysisSubs() {
+    const btn=document.getElementById('btn-conv-download-subs');
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Downloading...';
+    // Sync dry_run setting
+    const dry=document.getElementById('conv-dry-run').checked;
+    await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:dry})});
+    try {
+        const resp=await fetch('/api/convert/download-subs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        const data=await resp.json();
+        if(!data.ok){toast('Download failed: '+data.error,'error');return;}
+        const s=data.summary;
+        document.getElementById('conv-stat-downloaded').textContent=s.subtitles_downloaded+(s.subtitles_found_dry_run||0);
+        toast(dry?`Dry run: ${s.subtitles_found_dry_run} subtitles found`:`Downloaded ${s.subtitles_downloaded} subtitles`,s.subtitles_downloaded>0||s.subtitles_found_dry_run>0?'success':'info');
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Download Subs';}
+}
+
+// ---- Logs ----
+let logAutoRefreshTimer = null;
+
+async function loadLogs() {
+    const level=document.getElementById('log-level-filter').value;
+    const url='/api/logs?limit=200'+(level?'&level='+level:'');
+    try {
+        const resp=await fetch(url);
+        const data=await resp.json();
+        const container=document.getElementById('log-entries');
+        if(!data.logs||data.logs.length===0){container.innerHTML='<div style="color:var(--text-dim);padding:20px;text-align:center;">No log entries.</div>';return;}
+        const levelColors={ERROR:'var(--danger)',WARNING:'var(--accent)',INFO:'var(--info)',DEBUG:'var(--text-dim)'};
+        container.innerHTML=data.logs.map(l=>
+            `<div style="margin-bottom:2px;line-height:1.4;"><span style="color:var(--text-dim);">${esc(l.timestamp)}</span> <span style="color:${levelColors[l.level]||'var(--text)'};font-weight:600;">[${l.level}]</span> <span style="color:var(--text-dim);">${esc(l.logger)}:</span> ${esc(l.message)}</div>`
+        ).join('');
+        container.scrollTop=container.scrollHeight;
+    } catch(e){document.getElementById('log-entries').innerHTML='<div style="color:var(--danger);padding:20px;">Failed to load logs: '+esc(e.message)+'</div>';}
+}
+
+function toggleLogAutoRefresh() {
+    if(document.getElementById('log-auto-refresh').checked){
+        loadLogs();
+        logAutoRefreshTimer=setInterval(loadLogs,3000);
+    } else {
+        if(logAutoRefreshTimer){clearInterval(logAutoRefreshTimer);logAutoRefreshTimer=null;}
+    }
 }
 
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}

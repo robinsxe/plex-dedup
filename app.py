@@ -4,8 +4,11 @@ Provides a visual interface for managing duplicates and subtitles.
 """
 
 import logging
+import re
 import subprocess
 import threading
+import time
+from collections import deque
 from flask import Flask, render_template, jsonify, request
 
 from config import Config
@@ -13,10 +16,60 @@ from dedup_engine import DedupEngine, DeduplicationPlan
 from subtitle_manager import SubtitleManager
 from library_analyzer import LibraryAnalyzer, AnalysisResult
 
+_SENSITIVE_PATTERN = re.compile(
+    r'(api[_-]?key|token|password|authorization|bearer|secret)[=:\s]+\S+',
+    re.IGNORECASE,
+)
+
+
+def _redact(message: str) -> str:
+    """Redact sensitive values from log messages."""
+    return _SENSITIVE_PATTERN.sub(
+        lambda m: m.group().split("=")[0] + "=***REDACTED***"
+        if "=" in m.group()
+        else m.group().split(":")[0] + ": ***REDACTED***",
+        message,
+    )
+
+
+class MemoryLogHandler(logging.Handler):
+    """Ring buffer that keeps the last N log records in memory for the UI."""
+
+    def __init__(self, capacity=500):
+        super().__init__()
+        self._buffer = deque(maxlen=capacity)
+
+    def emit(self, record):
+        try:
+            self._buffer.append({
+                "timestamp": time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(record.created)
+                ),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": _redact(record.getMessage()),
+            })
+        except Exception:
+            self.handleError(record)
+
+    def get_logs(self, limit=200, level=None):
+        self.acquire()
+        try:
+            logs = list(self._buffer)
+        finally:
+            self.release()
+        if level:
+            logs = [entry for entry in logs if entry["level"] == level.upper()]
+        limit = min(limit, 500)
+        return logs[-limit:]
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+log_buffer = MemoryLogHandler(capacity=500)
+logging.getLogger().addHandler(log_buffer)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -61,14 +114,18 @@ current_plans: list[DeduplicationPlan] = []
 current_analysis: list[AnalysisResult] = []
 
 # Background task progress tracking
+SCAN_TIMEOUT_SECONDS = 1800  # 30 minutes — auto-expire stale locks
+
 scan_lock = threading.Lock()
+scan_cancel = threading.Event()
 scan_progress = {
     "running": False,
-    "phase": "",  # "analyzing", "searching", "done", "error"
+    "phase": "",  # "analyzing", "searching", "done", "error", "cancelled"
     "current": 0,
     "total": 0,
     "current_title": "",
     "error": None,
+    "started_at": None,
 }
 
 
@@ -260,6 +317,10 @@ def api_subtitle_download():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+class _ScanCancelled(Exception):
+    """Raised when the user cancels a running scan."""
+
+
 def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
     """Background worker for convert scan + Prowlarr search."""
     global current_analysis
@@ -270,7 +331,12 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
             "total": 0, "current_title": "Starting...", "error": None,
         })
 
+    def _check_cancel():
+        if scan_cancel.is_set():
+            raise _ScanCancelled()
+
     def on_progress(current, total, title):
+        _check_cancel()
         with scan_lock:
             scan_progress.update({
                 "current": current, "total": total, "current_title": title,
@@ -279,6 +345,7 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
     try:
         results = []
         if scan_type in ("movies", "all"):
+            _check_cancel()
             with scan_lock:
                 scan_progress["current_title"] = f"Scanning {config.plex_movie_library}..."
             res = analyzer.analyze_library(
@@ -288,6 +355,7 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
             results.extend(res)
 
         if scan_type in ("tv", "all"):
+            _check_cancel()
             with scan_lock:
                 scan_progress["current_title"] = f"Scanning {config.plex_tv_library}..."
                 scan_progress["current"] = 0
@@ -303,9 +371,11 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
         # search_limit: 0 = all, -1 = skip, N = first N items
         needs = [r for r in results if r.status == "needs_replacement"]
         if needs and config.prowlarr_api_key and search_limit != -1:
+            _check_cancel()
             search_count = len(needs) if search_limit == 0 else min(search_limit, len(needs))
 
             def on_search_progress(current, total, title):
+                _check_cancel()
                 with scan_lock:
                     scan_progress.update({
                         "current": current, "total": total,
@@ -329,6 +399,15 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
                 "current_title": "Complete",
             })
 
+    except _ScanCancelled:
+        logger.info("Scan cancelled by user")
+        with scan_lock:
+            scan_progress.update({
+                "phase": "cancelled", "running": False,
+                "error": "Scan was cancelled by user",
+                "started_at": None,
+            })
+
     except Exception as e:
         logger.error(f"Convert scan failed: {e}", exc_info=True)
         with scan_lock:
@@ -342,9 +421,20 @@ def api_convert_scan():
     """Start library analysis in background."""
     with scan_lock:
         if scan_progress["running"]:
-            return jsonify({"ok": False, "error": "Scan already in progress"}), 409
+            started = scan_progress.get("started_at")
+            if started and (time.time() - started) > SCAN_TIMEOUT_SECONDS:
+                logger.warning("Scan lock expired after timeout — resetting")
+                scan_progress.update({
+                    "running": False, "phase": "error",
+                    "error": "Scan timed out and was reset",
+                    "started_at": None,
+                })
+            else:
+                return jsonify({"ok": False, "error": "Scan already in progress"}), 409
         scan_progress["running"] = True
+        scan_progress["started_at"] = time.time()
 
+    scan_cancel.clear()
     data = request.json or {}
     scan_type = data.get("scan_type", "movies")
     limit = data.get("limit", 0)
@@ -457,6 +547,84 @@ def api_convert_cooldown():
         "ok": True,
         "count": analyzer.search_cooldown.count,
     })
+
+
+@app.route("/api/convert/download-subs", methods=["POST"])
+def api_convert_download_subs():
+    """Download .srt files for 'has_subs' items from the current analysis."""
+    global current_analysis
+
+    if not current_analysis:
+        return jsonify({"ok": False, "error": "No analysis results. Run a scan first."}), 400
+
+    data = request.json or {}
+    try:
+        limit = max(0, int(data.get("limit", 0)))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "limit must be a non-negative integer"}), 400
+
+    has_subs_items = [
+        {
+            "file_path": r.file_path,
+            "media_type": r.media_type,
+            "title": r.title,
+            "year": r.year,
+            "imdb_id": r.imdb_id,
+            "tmdb_id": r.tmdb_id,
+            "season_number": r.season_number,
+            "episode_number": r.episode_number,
+            "show_title": r.show_title,
+        }
+        for r in current_analysis if r.status == "has_subs"
+    ]
+
+    if not has_subs_items:
+        return jsonify({"ok": True, "summary": {"total_items_processed": 0}, "results": []})
+
+    try:
+        results = sub_manager.download_for_items(
+            has_subs_items,
+            languages=config.subtitle_languages,
+            dry_run=config.dry_run,
+            limit=limit,
+        )
+        summary = sub_manager.get_summary(results)
+        return jsonify({
+            "ok": True,
+            "summary": summary,
+            "results": [r.to_dict() for r in results[:200]],
+        })
+    except Exception as e:
+        logger.error(f"Subtitle download for analysis items failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/convert/cancel", methods=["POST"])
+def api_convert_cancel():
+    """Cancel a running scan or force-reset a stuck lock."""
+    scan_cancel.set()
+    with scan_lock:
+        was_running = scan_progress["running"]
+        # If the thread is alive it will detect the event and clean up.
+        # If it's already dead (stale lock), force-reset here.
+        if was_running:
+            scan_progress.update({
+                "running": False,
+                "phase": "cancelled",
+                "error": "Scan was cancelled by user",
+                "started_at": None,
+            })
+    logger.info(f"Scan cancel requested (was_running={was_running})")
+    return jsonify({"ok": True, "was_running": was_running})
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Get recent log entries."""
+    limit = request.args.get("limit", 200, type=int)
+    level = request.args.get("level", None)
+    logs = log_buffer.get_logs(limit=limit, level=level)
+    return jsonify({"ok": True, "logs": logs, "total": len(logs)})
 
 
 @app.route("/api/config", methods=["GET", "PUT"])
