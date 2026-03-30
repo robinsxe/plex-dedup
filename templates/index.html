@@ -491,11 +491,11 @@ async function pollConvertProgress() {
                 if(s.prowlarr_results_found>0){
                     document.getElementById('btn-conv-execute').style.display='';
                 }
-                if(p.grabbed_count) updateGrabbedCount(p.grabbed_count);
-                updateSkippedCount(p.skipped_count||0);
-                updateCooldownCount(p.cooldown_count||0);
                 toast(`Analysis complete: ${s.has_subs} can download subs, ${s.needs_replacement} need replacement, ${s.prowlarr_results_found} found on indexers`,'info');
             }
+            updateGrabbedCount(p.grabbed_count||0);
+            updateSkippedCount(p.skipped_count||0);
+            updateCooldownCount(p.cooldown_count||0);
         } else if(p.phase==='error' || p.phase==='cancelled') {
             clearInterval(convPollTimer);
             convPollTimer=null;
@@ -682,9 +682,20 @@ function toggleLogAutoRefresh() {
     }
 }
 
+async function loadTrackerCounts() {
+    try {
+        const resp=await fetch('/api/convert/progress');
+        const p=await resp.json();
+        updateGrabbedCount(p.grabbed_count||0);
+        updateSkippedCount(p.skipped_count||0);
+        updateCooldownCount(p.cooldown_count||0);
+    } catch(e) { /* ignore */ }
+}
+
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function toast(msg,type='info'){const el=document.getElementById('toast');el.textContent=msg;el.className='toast '+type+' show';setTimeout(()=>el.classList.remove('show'),4000);}
 init();
+loadTrackerCounts();
 </script>
 </body>
 </html>

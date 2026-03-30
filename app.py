@@ -134,57 +134,68 @@ def index():
     return render_template("index.html")
 
 
+STATUS_CACHE_TTL = 60  # seconds — avoid hammering all services on every poll
+_status_cache = {"data": None, "expires": 0}
+
+
 @app.route("/api/status")
 def api_status():
-    """Get connection status and config info."""
+    """Get connection status and config info (connection results cached for 60s)."""
     errors = config.validate()
     if errors:
         return jsonify({"ok": False, "errors": errors})
 
-    connections = engine.test_connections()
+    now = time.time()
+    if _status_cache["data"] and now < _status_cache["expires"]:
+        cached = dict(_status_cache["data"])
+    else:
+        connections = engine.test_connections()
 
-    # Test OpenSubtitles separately
-    opensubs_ok = False
-    if config.opensubtitles_api_key:
-        try:
-            from opensubtitles_client import OpenSubtitlesClient
-            os_client = OpenSubtitlesClient(
-                config.opensubtitles_api_key,
-                config.opensubtitles_username,
-                config.opensubtitles_password,
-            )
-            opensubs_ok = os_client.test_connection()
-        except Exception as e:
-            logger.warning(f"OpenSubtitles connection test failed: {e}")
+        opensubs_ok = False
+        if config.opensubtitles_api_key:
+            try:
+                from opensubtitles_client import OpenSubtitlesClient
+                os_client = OpenSubtitlesClient(
+                    config.opensubtitles_api_key,
+                    config.opensubtitles_username,
+                    config.opensubtitles_password,
+                )
+                opensubs_ok = os_client.test_connection()
+            except Exception as e:
+                logger.warning(f"OpenSubtitles connection test failed: {e}")
 
-    # Test Prowlarr separately
-    prowlarr_ok = False
-    if config.prowlarr_api_key:
-        try:
-            from prowlarr_client import ProwlarrClient
-            pr_client = ProwlarrClient(config.prowlarr_url, config.prowlarr_api_key)
-            prowlarr_ok = pr_client.test_connection()
-        except Exception as e:
-            logger.warning(f"Prowlarr connection test failed: {e}")
+        prowlarr_ok = False
+        if config.prowlarr_api_key:
+            try:
+                from prowlarr_client import ProwlarrClient
+                pr_client = ProwlarrClient(config.prowlarr_url, config.prowlarr_api_key)
+                prowlarr_ok = pr_client.test_connection()
+            except Exception as e:
+                logger.warning(f"Prowlarr connection test failed: {e}")
 
-    return jsonify({
-        "ok": connections.get("plex", False),
-        "version": APP_VERSION,
-        "plex_connected": connections.get("plex", False),
-        "radarr_connected": connections.get("radarr", False),
-        "sonarr_connected": connections.get("sonarr", False),
-        "opensubtitles_connected": opensubs_ok,
-        "prowlarr_connected": prowlarr_ok,
-        "libraries": connections.get("libraries", []),
-        "config": {
-            "movie_library": config.plex_movie_library,
-            "tv_library": config.plex_tv_library,
-            "dry_run": config.dry_run,
-            "keep_strategy": config.keep_strategy,
-            "auto_unmonitor": config.auto_unmonitor,
-            "subtitle_languages": config.subtitle_languages,
-        },
-    })
+        cached = {
+            "ok": connections.get("plex", False),
+            "version": APP_VERSION,
+            "plex_connected": connections.get("plex", False),
+            "radarr_connected": connections.get("radarr", False),
+            "sonarr_connected": connections.get("sonarr", False),
+            "opensubtitles_connected": opensubs_ok,
+            "prowlarr_connected": prowlarr_ok,
+            "libraries": connections.get("libraries", []),
+        }
+        _status_cache["data"] = cached
+        _status_cache["expires"] = now + STATUS_CACHE_TTL
+
+    # Always return fresh config (not cached — user can change it)
+    cached["config"] = {
+        "movie_library": config.plex_movie_library,
+        "tv_library": config.plex_tv_library,
+        "dry_run": config.dry_run,
+        "keep_strategy": config.keep_strategy,
+        "auto_unmonitor": config.auto_unmonitor,
+        "subtitle_languages": config.subtitle_languages,
+    }
+    return jsonify(cached)
 
 
 @app.route("/api/scan", methods=["POST"])
