@@ -102,6 +102,9 @@
         .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
         .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
 
+        .cfg-input { display:block; width:100%; margin-top:4px; padding:8px 12px; border-radius:var(--radius); border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:14px; }
+        .cfg-input:focus { outline:none; border-color:var(--accent); }
+
         @media (max-width: 768px) {
             .stats { grid-template-columns: repeat(2, 1fr); }
             .file-meta { flex-direction: column; gap: 4px; }
@@ -125,6 +128,7 @@
     <div class="tabs">
         <div class="tab active" onclick="switchTab('dedup')">🗂 Deduplication</div>
         <div class="tab" onclick="switchTab('swedish')">🇸🇪 Swedish Subtitles</div>
+        <div class="tab" onclick="switchTab('settings')">⚙ Settings</div>
         <div class="tab" onclick="switchTab('logs')">📋 Logs</div>
     </div>
 
@@ -208,7 +212,8 @@
                     <option value="-1">Skip Prowlarr search</option>
                 </select>
                 <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
-                <button class="purple" id="btn-conv-download-subs" onclick="downloadAnalysisSubs()" style="display:none;">📥 Download Subs</button>
+                <button class="purple" id="btn-conv-queue" onclick="addToQueue()" style="display:none;">📥 Add to Queue</button>
+                <button id="btn-conv-process-queue" onclick="processQueue()" style="display:none;">▶ Process Queue</button>
                 <button class="danger" id="btn-conv-execute" onclick="convertExecute()" style="display:none;">📥 Grab Releases</button>
                 <button class="danger" id="btn-cancel-scan" onclick="cancelScan()" style="display:none;">✕ Cancel Scan</button>
                 <button id="btn-conv-clear" onclick="clearGrabbed()" style="display:none;">🗑 Clear Grabbed</button>
@@ -217,6 +222,7 @@
                 <span id="conv-grabbed-count" style="font-size:13px;color:var(--text-dim);"></span>
                 <span id="conv-skipped-count" style="font-size:13px;color:var(--text-dim);"></span>
                 <span id="conv-cooldown-count" style="font-size:13px;color:var(--text-dim);"></span>
+                <span id="conv-queue-count" style="font-size:13px;color:var(--purple);font-weight:500;"></span>
                 <div style="flex:1;"></div>
                 <label class="toggle"><input type="checkbox" id="conv-dry-run" checked> Dry Run</label>
             </div>
@@ -227,6 +233,72 @@
                 <div class="icon">🇸🇪</div>
                 <p>Click <strong>Analyze Library</strong> to find movies & shows missing Swedish subtitles.</p>
                 <p style="margin-top:8px; font-size:13px;">Items with subs available get .srt downloads. Items without get replacement releases via Prowlarr.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======================== SETTINGS TAB ======================== -->
+    <div class="tab-content" id="tab-settings">
+        <div class="card">
+            <h3 style="margin-bottom:16px;">Plex</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">URL<input type="text" id="cfg-plex-url" class="cfg-input" placeholder="http://localhost:32400"></label>
+                <label style="font-size:13px;color:var(--text-dim);">Token<input type="password" id="cfg-plex-token" class="cfg-input" placeholder="Plex token"></label>
+                <label style="font-size:13px;color:var(--text-dim);">Movie Library<input type="text" id="cfg-plex-movie-lib" class="cfg-input" placeholder="Movies"></label>
+                <label style="font-size:13px;color:var(--text-dim);">TV Library<input type="text" id="cfg-plex-tv-lib" class="cfg-input" placeholder="TV Shows"></label>
+            </div>
+
+            <h3 style="margin-bottom:16px;">Radarr</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">URL<input type="text" id="cfg-radarr-url" class="cfg-input" placeholder="http://localhost:7878"></label>
+                <label style="font-size:13px;color:var(--text-dim);">API Key<input type="password" id="cfg-radarr-key" class="cfg-input" placeholder="API key"></label>
+            </div>
+
+            <h3 style="margin-bottom:16px;">Sonarr</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">URL<input type="text" id="cfg-sonarr-url" class="cfg-input" placeholder="http://localhost:8989"></label>
+                <label style="font-size:13px;color:var(--text-dim);">API Key<input type="password" id="cfg-sonarr-key" class="cfg-input" placeholder="API key"></label>
+            </div>
+
+            <h3 style="margin-bottom:16px;">Prowlarr</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">URL<input type="text" id="cfg-prowlarr-url" class="cfg-input" placeholder="http://localhost:9696"></label>
+                <label style="font-size:13px;color:var(--text-dim);">API Key<input type="password" id="cfg-prowlarr-key" class="cfg-input" placeholder="API key"></label>
+            </div>
+
+            <h3 style="margin-bottom:16px;">OpenSubtitles</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">API Key<input type="password" id="cfg-opensubs-key" class="cfg-input" placeholder="API key"></label>
+                <label style="font-size:13px;color:var(--text-dim);">Username<input type="text" id="cfg-opensubs-user" class="cfg-input" placeholder="Username"></label>
+                <label style="font-size:13px;color:var(--text-dim);">Password<input type="password" id="cfg-opensubs-pass" class="cfg-input" placeholder="Password"></label>
+            </div>
+
+            <h3 style="margin-bottom:16px;">Behavior</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">Keep Strategy
+                    <select id="cfg-keep-strategy" class="cfg-input">
+                        <option value="best_quality">Best Quality</option>
+                        <option value="largest_file">Largest File</option>
+                        <option value="newest">Newest</option>
+                    </select>
+                </label>
+                <label style="font-size:13px;color:var(--text-dim);">Subtitle Languages<input type="text" id="cfg-sub-langs" class="cfg-input" placeholder="sv,en"></label>
+                <div style="display:flex;flex-direction:column;gap:8px;padding-top:16px;">
+                    <label class="toggle"><input type="checkbox" id="cfg-dry-run"> Dry Run</label>
+                    <label class="toggle"><input type="checkbox" id="cfg-auto-unmonitor"> Auto Unmonitor</label>
+                    <label class="toggle"><input type="checkbox" id="cfg-delete-files"> Delete Files</label>
+                </div>
+            </div>
+
+            <h3 style="margin-bottom:16px;">Subtitle Queue</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+                <label style="font-size:13px;color:var(--text-dim);">Daily Download Limit<input type="number" id="cfg-daily-limit" class="cfg-input" min="1" max="200" placeholder="20"></label>
+                <label style="font-size:13px;color:var(--text-dim);">Queue Processing Hour (0-23)<input type="number" id="cfg-queue-hour" class="cfg-input" min="0" max="23" placeholder="4"></label>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:center;">
+                <button class="primary" onclick="saveSettings()">💾 Save Settings</button>
+                <span id="settings-status" style="font-size:13px;color:var(--text-dim);"></span>
             </div>
         </div>
     </div>
@@ -283,6 +355,7 @@ async function init() {
             document.getElementById('dry-run-toggle').checked = data.config.dry_run;
             document.getElementById('unmonitor-toggle').checked = data.config.auto_unmonitor;
             // Config loaded
+            loadSettings();
         }
         if (!data.ok) toast('Connection issues detected — check settings', 'error');
     } catch (e) { toast('Cannot connect to backend: ' + e.message, 'error'); }
@@ -419,7 +492,7 @@ async function convertScan() {
     const btn=document.getElementById('btn-conv-scan');
     btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Analyzing...';
     document.getElementById('btn-conv-execute').style.display='none';
-    document.getElementById('btn-conv-download-subs').style.display='none';
+    document.getElementById('btn-conv-queue').style.display='none';
     document.getElementById('btn-cancel-scan').style.display='';
 
     // Show progress bar
@@ -491,7 +564,7 @@ async function pollConvertProgress() {
                 renderConvertResults(p.results||[]);
 
                 if(s.has_subs>0){
-                    document.getElementById('btn-conv-download-subs').style.display='';
+                    document.getElementById('btn-conv-queue').style.display='';
                 }
                 if(s.prowlarr_results_found>0){
                     document.getElementById('btn-conv-execute').style.display='';
@@ -536,7 +609,7 @@ function renderConvertResults(results) {
                 ${r.matching_releases&&r.matching_releases.length>0?`<div style="margin-top:8px;color:var(--text-dim);">${r.matching_releases.length} release(s) with Swedish subs on OpenSubtitles</div>`:''}
             </div>`;
         } else if(r.status==='has_subs') {
-            details=`<div style="margin-top:8px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px;color:var(--success);">Swedish subtitle available for your current release — click <strong>Download Subs</strong> above to download .srt files for all eligible items.</div>`;
+            details=`<div style="margin-top:8px;padding:10px;background:var(--surface2);border-radius:6px;font-size:13px;color:var(--success);">Swedish subtitle available for your current release — click <strong>Add to Queue</strong> above to queue for download.</div>`;
         }
 
         return `<div class="dup-item">
@@ -642,21 +715,53 @@ async function cancelScan() {
     } catch(e){toast('Error cancelling: '+e.message,'error');}
 }
 
-// ---- Download Subs for has_subs items ----
-async function downloadAnalysisSubs() {
-    const btn=document.getElementById('btn-conv-download-subs');
-    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Downloading...';
-    // Sync dry_run setting
+// ---- Subtitle Queue ----
+async function addToQueue() {
+    const btn=document.getElementById('btn-conv-queue');
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Adding...';
+    try {
+        const resp=await fetch('/api/subtitles/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        const data=await resp.json();
+        if(!data.ok){toast('Failed: '+data.error,'error');return;}
+        toast(`Added ${data.added} items to queue (${data.skipped} already queued). ${data.total_pending} pending.`,'success');
+        document.getElementById('btn-conv-process-queue').style.display='';
+        loadQueueCount();
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Add to Queue';}
+}
+
+async function processQueue() {
+    const btn=document.getElementById('btn-conv-process-queue');
+    btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Processing...';
     const dry=document.getElementById('conv-dry-run').checked;
     await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:dry})});
     try {
-        const resp=await fetch('/api/convert/download-subs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        const resp=await fetch('/api/subtitles/queue/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:dry})});
         const data=await resp.json();
-        if(!data.ok){toast('Download failed: '+data.error,'error');return;}
-        const s=data.summary;
-        document.getElementById('conv-stat-downloaded').textContent=s.subtitles_downloaded+(s.subtitles_found_dry_run||0);
-        toast(dry?`Dry run: ${s.subtitles_found_dry_run} subtitles found`:`Downloaded ${s.subtitles_downloaded} subtitles`,s.subtitles_downloaded>0||s.subtitles_found_dry_run>0?'success':'info');
-    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='📥 Download Subs';}
+        if(!data.ok){toast('Failed: '+data.error,'error');return;}
+        const msg=dry
+            ?`Dry run: ${data.downloaded} would be downloaded`
+            :`Downloaded ${data.downloaded}, failed ${data.failed}${data.limit_reached?' (daily limit reached)':''}. ${data.remaining} remaining.`;
+        toast(msg,data.limit_reached?'info':'success');
+        loadQueueCount();
+    } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='▶ Process Queue';}
+}
+
+async function loadQueueCount() {
+    try {
+        const resp=await fetch('/api/subtitles/queue');
+        const data=await resp.json();
+        const el=document.getElementById('conv-queue-count');
+        const btn=document.getElementById('btn-conv-process-queue');
+        if(data.pending>0){
+            el.textContent=`${data.pending} in download queue`;
+            btn.style.display='';
+        } else {
+            el.textContent='';
+        }
+        if(data.last_run){
+            el.textContent+=(el.textContent?' | ':'')+'Last run: '+data.last_run;
+        }
+    } catch(e) { /* ignore */ }
 }
 
 // ---- Logs ----
@@ -695,6 +800,73 @@ async function loadTrackerCounts() {
         updateSkippedCount(p.skipped_count||0);
         updateCooldownCount(p.cooldown_count||0);
     } catch(e) { /* ignore */ }
+    loadQueueCount();
+}
+
+// ---- Settings ----
+async function loadSettings() {
+    try {
+        const resp=await fetch('/api/config');
+        const c=await resp.json();
+        document.getElementById('cfg-plex-url').value=c.plex_url||'';
+        document.getElementById('cfg-plex-token').value=c.plex_token||'';
+        document.getElementById('cfg-plex-movie-lib').value=c.plex_movie_library||'';
+        document.getElementById('cfg-plex-tv-lib').value=c.plex_tv_library||'';
+        document.getElementById('cfg-radarr-url').value=c.radarr_url||'';
+        document.getElementById('cfg-radarr-key').value=c.radarr_api_key||'';
+        document.getElementById('cfg-sonarr-url').value=c.sonarr_url||'';
+        document.getElementById('cfg-sonarr-key').value=c.sonarr_api_key||'';
+        document.getElementById('cfg-prowlarr-url').value=c.prowlarr_url||'';
+        document.getElementById('cfg-prowlarr-key').value=c.prowlarr_api_key||'';
+        document.getElementById('cfg-opensubs-key').value=c.opensubtitles_api_key||'';
+        document.getElementById('cfg-opensubs-user').value=c.opensubtitles_username||'';
+        document.getElementById('cfg-opensubs-pass').value=c.opensubtitles_password||'';
+        document.getElementById('cfg-keep-strategy').value=c.keep_strategy||'best_quality';
+        document.getElementById('cfg-sub-langs').value=(c.subtitle_languages||[]).join(', ');
+        document.getElementById('cfg-dry-run').checked=c.dry_run!==false;
+        document.getElementById('cfg-auto-unmonitor').checked=c.auto_unmonitor!==false;
+        document.getElementById('cfg-delete-files').checked=c.delete_files!==false;
+        document.getElementById('cfg-daily-limit').value=c.subtitle_daily_limit||20;
+        document.getElementById('cfg-queue-hour').value=c.subtitle_queue_hour!=null?c.subtitle_queue_hour:4;
+    } catch(e) { /* ignore on init */ }
+}
+
+async function saveSettings() {
+    const data={
+        plex_url:document.getElementById('cfg-plex-url').value,
+        plex_token:document.getElementById('cfg-plex-token').value,
+        plex_movie_library:document.getElementById('cfg-plex-movie-lib').value,
+        plex_tv_library:document.getElementById('cfg-plex-tv-lib').value,
+        radarr_url:document.getElementById('cfg-radarr-url').value,
+        radarr_api_key:document.getElementById('cfg-radarr-key').value,
+        sonarr_url:document.getElementById('cfg-sonarr-url').value,
+        sonarr_api_key:document.getElementById('cfg-sonarr-key').value,
+        prowlarr_url:document.getElementById('cfg-prowlarr-url').value,
+        prowlarr_api_key:document.getElementById('cfg-prowlarr-key').value,
+        opensubtitles_api_key:document.getElementById('cfg-opensubs-key').value,
+        opensubtitles_username:document.getElementById('cfg-opensubs-user').value,
+        opensubtitles_password:document.getElementById('cfg-opensubs-pass').value,
+        keep_strategy:document.getElementById('cfg-keep-strategy').value,
+        subtitle_languages:document.getElementById('cfg-sub-langs').value,
+        dry_run:document.getElementById('cfg-dry-run').checked,
+        auto_unmonitor:document.getElementById('cfg-auto-unmonitor').checked,
+        delete_files:document.getElementById('cfg-delete-files').checked,
+        subtitle_daily_limit:parseInt(document.getElementById('cfg-daily-limit').value)||20,
+        subtitle_queue_hour:parseInt(document.getElementById('cfg-queue-hour').value)||4,
+    };
+    try {
+        const resp=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        const result=await resp.json();
+        if(result.ok){
+            toast('Settings saved successfully','success');
+            document.getElementById('settings-status').textContent='Saved!';
+            setTimeout(()=>document.getElementById('settings-status').textContent='',3000);
+            // Refresh status badges
+            init();
+        } else {
+            toast('Failed to save settings','error');
+        }
+    } catch(e){toast('Error saving: '+e.message,'error');}
 }
 
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}

@@ -11,10 +11,11 @@ import time
 from collections import deque
 from flask import Flask, render_template, jsonify, request
 
-from config import Config
+from config import Config, SETTINGS_FILE
 from dedup_engine import DedupEngine, DeduplicationPlan
 from subtitle_manager import SubtitleManager
 from library_analyzer import LibraryAnalyzer, AnalysisResult
+from subtitle_queue import SubtitleQueue
 
 _SENSITIVE_PATTERN = re.compile(
     r'(api[_-]?key|token|password|authorization|bearer|secret)[=:\s]+\S+',
@@ -110,6 +111,7 @@ config = Config.from_env()
 engine = DedupEngine(config)
 sub_manager = SubtitleManager(config)
 analyzer = LibraryAnalyzer(config)
+sub_queue = SubtitleQueue(config)
 current_plans: list[DeduplicationPlan] = []
 current_analysis: list[AnalysisResult] = []
 
@@ -638,41 +640,239 @@ def api_logs():
     return jsonify({"ok": True, "logs": logs, "total": len(logs)})
 
 
+_SECRET_MASK = "__MASKED__"
+
+
+def _mask(value: str) -> str:
+    """Mask a secret value for API display."""
+    if not value:
+        return ""
+    return _SECRET_MASK
+
+
 @app.route("/api/config", methods=["GET", "PUT"])
 def api_config():
-    global config, engine, sub_manager, analyzer
+    global config, engine, sub_manager, analyzer, sub_queue
 
     if request.method == "GET":
         return jsonify({
+            # Plex
+            "plex_url": config.plex_url,
+            "plex_token": _mask(config.plex_token),
+            "plex_movie_library": config.plex_movie_library,
+            "plex_tv_library": config.plex_tv_library,
+            # Radarr
+            "radarr_url": config.radarr_url,
+            "radarr_api_key": _mask(config.radarr_api_key),
+            # Sonarr
+            "sonarr_url": config.sonarr_url,
+            "sonarr_api_key": _mask(config.sonarr_api_key),
+            # Prowlarr
+            "prowlarr_url": config.prowlarr_url,
+            "prowlarr_api_key": _mask(config.prowlarr_api_key),
+            # OpenSubtitles
+            "opensubtitles_api_key": _mask(config.opensubtitles_api_key),
+            "opensubtitles_username": config.opensubtitles_username,
+            "opensubtitles_password": _mask(config.opensubtitles_password),
+            # Behavior
             "dry_run": config.dry_run,
             "keep_strategy": config.keep_strategy,
             "auto_unmonitor": config.auto_unmonitor,
             "delete_files": config.delete_files,
-            "plex_movie_library": config.plex_movie_library,
-            "plex_tv_library": config.plex_tv_library,
             "subtitle_languages": config.subtitle_languages,
+            # Queue
+            "subtitle_daily_limit": config.subtitle_daily_limit,
+            "subtitle_queue_hour": config.subtitle_queue_hour,
         })
 
     data = request.json or {}
-    if "dry_run" in data:
-        config.dry_run = bool(data["dry_run"])
-    if "keep_strategy" in data:
-        config.keep_strategy = data["keep_strategy"]
-    if "auto_unmonitor" in data:
-        config.auto_unmonitor = bool(data["auto_unmonitor"])
-    if "delete_files" in data:
-        config.delete_files = bool(data["delete_files"])
-    if "plex_movie_library" in data:
-        config.plex_movie_library = data["plex_movie_library"]
-    if "plex_tv_library" in data:
-        config.plex_tv_library = data["plex_tv_library"]
-    if "subtitle_languages" in data:
-        config.subtitle_languages = data["subtitle_languages"]
 
+    # String fields — only update if not masked placeholder
+    str_fields = {
+        "plex_url": "plex_url",
+        "plex_token": "plex_token",
+        "plex_movie_library": "plex_movie_library",
+        "plex_tv_library": "plex_tv_library",
+        "radarr_url": "radarr_url",
+        "radarr_api_key": "radarr_api_key",
+        "sonarr_url": "sonarr_url",
+        "sonarr_api_key": "sonarr_api_key",
+        "prowlarr_url": "prowlarr_url",
+        "prowlarr_api_key": "prowlarr_api_key",
+        "opensubtitles_api_key": "opensubtitles_api_key",
+        "opensubtitles_username": "opensubtitles_username",
+        "opensubtitles_password": "opensubtitles_password",
+        "keep_strategy": "keep_strategy",
+    }
+    # Validate keep_strategy if provided
+    if "keep_strategy" in data:
+        if data["keep_strategy"] not in ("best_quality", "largest_file", "newest"):
+            return jsonify({"ok": False, "error": "Invalid keep_strategy"}), 400
+
+    # Validate URL fields
+    url_fields = {"plex_url", "radarr_url", "sonarr_url", "prowlarr_url"}
+    for url_key in url_fields:
+        if url_key in data and data[url_key]:
+            from urllib.parse import urlparse
+            parsed = urlparse(data[url_key])
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                return jsonify({"ok": False, "error": f"Invalid URL for {url_key}"}), 400
+
+    for json_key, attr in str_fields.items():
+        if json_key in data:
+            value = data[json_key]
+            # Skip masked/empty values — don't overwrite real secrets
+            if not value or value == _SECRET_MASK:
+                continue
+            if not isinstance(value, str):
+                continue
+            setattr(config, attr, value)
+
+    # Boolean fields
+    bool_fields = ["dry_run", "auto_unmonitor", "delete_files"]
+    for key in bool_fields:
+        if key in data:
+            setattr(config, key, bool(data[key]))
+
+    # List fields
+    if "subtitle_languages" in data:
+        val = data["subtitle_languages"]
+        if isinstance(val, str):
+            config.subtitle_languages = [l.strip() for l in val.split(",") if l.strip()]
+        elif isinstance(val, list):
+            config.subtitle_languages = val
+
+    # Integer fields
+    if "subtitle_daily_limit" in data:
+        try:
+            config.subtitle_daily_limit = max(1, int(data["subtitle_daily_limit"]))
+        except (TypeError, ValueError):
+            pass
+    if "subtitle_queue_hour" in data:
+        try:
+            config.subtitle_queue_hour = max(0, min(23, int(data["subtitle_queue_hour"])))
+        except (TypeError, ValueError):
+            pass
+
+    # Persist and rebuild services
+    config.save_to_file()
+    _status_cache["data"] = None  # Invalidate connection cache
     engine = DedupEngine(config)
     sub_manager = SubtitleManager(config)
     analyzer = LibraryAnalyzer(config)
+    sub_queue = SubtitleQueue(config)
     return jsonify({"ok": True})
+
+
+# ---- Subtitle Queue ----
+
+@app.route("/api/subtitles/queue", methods=["GET", "POST", "DELETE"])
+def api_subtitle_queue():
+    """Manage the subtitle download queue."""
+    global sub_queue
+
+    if request.method == "GET":
+        status = sub_queue.get_status()
+        status["ok"] = True
+        return jsonify(status)
+
+    if request.method == "DELETE":
+        data = request.json or {}
+        status_filter = data.get("status")
+        count = sub_queue.clear(status=status_filter)
+        return jsonify({"ok": True, "cleared": count})
+
+    # POST — add has_subs items from current analysis to queue
+    if not current_analysis:
+        return jsonify({"ok": False, "error": "No analysis results. Run a scan first."}), 400
+
+    has_subs_items = [
+        {
+            "file_path": r.file_path,
+            "media_type": r.media_type,
+            "title": r.title,
+            "year": r.year,
+            "imdb_id": r.imdb_id,
+            "tmdb_id": r.tmdb_id,
+            "season_number": r.season_number,
+            "episode_number": r.episode_number,
+            "show_title": r.show_title,
+        }
+        for r in current_analysis if r.status == "has_subs"
+    ]
+
+    result = sub_queue.add(has_subs_items)
+    result["ok"] = True
+    return jsonify(result)
+
+
+@app.route("/api/subtitles/queue/process", methods=["POST"])
+def api_subtitle_queue_process():
+    """Manually trigger queue processing (respects daily limit)."""
+    data = request.json or {}
+    dry_run = data.get("dry_run", config.dry_run)
+
+    try:
+        result = sub_queue.process(dry_run=dry_run)
+        result["ok"] = True
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Queue processing failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---- Background Scheduler ----
+
+def _queue_scheduler():
+    """Background thread that processes the subtitle queue daily."""
+    logger.info(
+        f"Subtitle queue scheduler started "
+        f"(runs daily at {config.subtitle_queue_hour:02d}:00)"
+    )
+    while True:
+        try:
+            now = time.localtime()
+            # Calculate seconds until next run
+            target_hour = config.subtitle_queue_hour
+            if now.tm_hour < target_hour:
+                wait_hours = target_hour - now.tm_hour
+            elif now.tm_hour == target_hour and now.tm_min == 0:
+                wait_hours = 0
+            else:
+                wait_hours = 24 - now.tm_hour + target_hour
+
+            wait_seconds = (wait_hours * 3600) - (now.tm_min * 60) - now.tm_sec
+            if wait_seconds <= 0:
+                wait_seconds = 86400  # Wait a full day
+
+            next_run = time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(time.time() + wait_seconds),
+            )
+            logger.info(f"Queue scheduler: next run at {next_run}")
+
+            # Sleep in 60s chunks so we can pick up config changes
+            slept = 0
+            while slept < wait_seconds:
+                time.sleep(min(60, wait_seconds - slept))
+                slept += 60
+
+            if sub_queue.pending_count > 0:
+                logger.info(
+                    f"Queue scheduler: processing {sub_queue.pending_count} "
+                    f"pending items"
+                )
+                sub_queue.process(dry_run=False)
+            else:
+                logger.info("Queue scheduler: no pending items, skipping")
+
+        except Exception as e:
+            logger.error(f"Queue scheduler error: {e}", exc_info=True)
+            time.sleep(3600)  # Wait an hour on error
+
+
+_scheduler_thread = threading.Thread(target=_queue_scheduler, daemon=True)
+_scheduler_thread.start()
 
 
 def run():
