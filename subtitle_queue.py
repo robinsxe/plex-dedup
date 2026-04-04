@@ -36,6 +36,15 @@ class SubtitleQueue:
             with open(self._path) as f:
                 raw = json.load(f)
             self._data = raw.get("queue", [])
+            # Crash recovery: reset any "processing" items back to pending
+            recovered = 0
+            for item in self._data:
+                if item.get("status") == "processing":
+                    item["status"] = "pending"
+                    recovered += 1
+            if recovered:
+                logger.info(f"Recovered {recovered} items stuck in 'processing' state")
+                self._save()
             self._last_run = raw.get("last_run")
             self._last_run_result = raw.get("last_run_result")
             logger.info(

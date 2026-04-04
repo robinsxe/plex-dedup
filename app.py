@@ -11,7 +11,7 @@ import time
 from collections import deque
 from flask import Flask, render_template, jsonify, request
 
-from config import Config, SETTINGS_FILE
+from config import Config
 from dedup_engine import DedupEngine, DeduplicationPlan
 from subtitle_manager import SubtitleManager
 from library_analyzer import LibraryAnalyzer, AnalysisResult
@@ -42,14 +42,19 @@ class MemoryLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            self._buffer.append({
+            entry = {
                 "timestamp": time.strftime(
                     "%Y-%m-%d %H:%M:%S", time.localtime(record.created)
                 ),
                 "level": record.levelname,
                 "logger": record.name,
                 "message": _redact(record.getMessage()),
-            })
+            }
+            self.acquire()
+            try:
+                self._buffer.append(entry)
+            finally:
+                self.release()
         except Exception:
             self.handleError(record)
 
@@ -446,10 +451,13 @@ def api_convert_scan():
                 return jsonify({"ok": False, "error": "Scan already in progress"}), 409
         scan_progress["running"] = True
         scan_progress["started_at"] = time.time()
-
-    scan_cancel.clear()
+        scan_cancel.clear()
     data = request.json or {}
     scan_type = data.get("scan_type", "movies")
+    if scan_type not in ("movies", "tv", "all"):
+        with scan_lock:
+            scan_progress.update({"running": False, "started_at": None})
+        return jsonify({"ok": False, "error": "Invalid scan_type"}), 400
     limit = data.get("limit", 0)
     search_limit = data.get("search_limit", 50)
 
@@ -653,6 +661,12 @@ def _mask(value: str) -> str:
 @app.route("/api/config", methods=["GET", "PUT"])
 def api_config():
     global config, engine, sub_manager, analyzer, sub_queue
+
+    if request.method == "PUT":
+        # Block config changes while a scan is running
+        with scan_lock:
+            if scan_progress["running"]:
+                return jsonify({"ok": False, "error": "Cannot save settings while a scan is running"}), 409
 
     if request.method == "GET":
         return jsonify({
