@@ -15,6 +15,7 @@ from config import Config
 from plex_client import PlexClient
 from opensubtitles_client import OpenSubtitlesClient
 from prowlarr_client import ProwlarrClient
+from arr_common import StaleReleaseError
 from radarr_client import RadarrClient
 from sonarr_client import SonarrClient
 
@@ -281,6 +282,18 @@ class SearchCooldownTracker:
     @property
     def count(self) -> int:
         return len(self._data)
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_release_title(title: str) -> str:
+    """
+    Loose normalization for comparing release titles across two consecutive
+    indexer searches. Lowercases and collapses whitespace; keeps everything
+    else so we still distinguish e.g. -GROUPA from -GROUPB.
+    """
+    return _WHITESPACE_RE.sub(" ", title.strip().lower())
 
 
 def _build_nordic_pattern(tags: list[str]) -> re.Pattern:
@@ -974,12 +987,7 @@ class LibraryAnalyzer:
             return True
 
         try:
-            if result.media_type == "movie":
-                logger.info(f"Grabbing via Radarr: {release_title}")
-                success = self.radarr.grab_release(guid, indexer_id)
-            else:
-                logger.info(f"Grabbing via Sonarr: {release_title}")
-                success = self.sonarr.grab_release(guid, indexer_id)
+            success = self._grab_with_retry(result, best_result)
 
             if not success:
                 result.status = "error"
@@ -999,6 +1007,140 @@ class LibraryAnalyzer:
             result.error = f"Grab failed: {e}"
             logger.error(f"Failed to grab {release_title}: {e}")
             return False
+
+    def _grab_with_retry(
+        self,
+        result: "AnalysisResult",
+        best_result: dict,
+    ) -> bool:
+        """
+        Grab with stale-cache recovery.
+
+        Radarr/Sonarr cache search results in memory for a short window. If the
+        guid is evicted (HTTP 404 on POST /api/v3/release), re-search to refresh
+        the cache, find the same release by title, and retry. As a last resort,
+        push by downloadUrl which bypasses the guid cache entirely.
+        """
+        is_movie = result.media_type == "movie"
+        client: "RadarrClient | SonarrClient" = self.radarr if is_movie else self.sonarr
+        label = "Radarr" if is_movie else "Sonarr"
+        release_title = best_result.get("title") or result.recommended_release or ""
+        guid = best_result.get("guid", "")
+        indexer_id = best_result.get("indexerId") or best_result.get("indexer_id")
+
+        logger.info(f"Grabbing via {label}: {release_title}")
+        try:
+            return client.grab_release(guid, indexer_id)
+        except StaleReleaseError as e:
+            logger.warning(f"{label} cache stale for {release_title} ({e}) — refreshing")
+
+        # Refresh cache and retry (movie path only — Sonarr episode_id not tracked)
+        if is_movie:
+            refreshed = self._refresh_radarr_release(result, release_title)
+            if refreshed:
+                new_guid, new_indexer = refreshed
+                logger.info(
+                    f"Retrying grab via Radarr with refreshed guid for {release_title}"
+                )
+                try:
+                    if client.grab_release(new_guid, new_indexer):
+                        return True
+                    logger.warning(
+                        f"Radarr retry returned failure for {release_title} — falling back to push"
+                    )
+                except StaleReleaseError:
+                    logger.warning(
+                        f"Radarr still 404 after refresh for {release_title} — falling back to push"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Radarr retry raised {type(e).__name__} for {release_title} ({e}) "
+                        f"— falling back to push"
+                    )
+
+        # Final fallback: push by URL (bypasses guid cache)
+        return self._push_fallback(client, label, release_title, best_result)
+
+    def _refresh_radarr_release(
+        self, result: "AnalysisResult", release_title: str
+    ) -> tuple[str, int] | None:
+        """
+        Re-run Radarr's interactive search and locate the same release by
+        normalized title. Returns (guid, indexerId) on match, None otherwise.
+
+        Skips when neither tmdb_id nor imdb_id is known, since the title-only
+        fallback in find_movie() pulls the full Radarr catalog per item.
+        """
+        if not result.tmdb_id and not result.imdb_id:
+            logger.warning(
+                f"Skipping Radarr refresh for {result.display_title}: "
+                f"no tmdb_id or imdb_id — title-only lookup is too expensive"
+            )
+            return None
+
+        movie = self.radarr.find_movie(
+            tmdb_id=result.tmdb_id,
+            imdb_id=result.imdb_id,
+            title=result.title,
+            year=result.year,
+        )
+        if not movie or "id" not in movie:
+            logger.warning(f"Could not re-locate movie in Radarr: {result.display_title}")
+            return None
+
+        fresh = self.radarr.search_releases(movie["id"])
+        if not fresh:
+            logger.warning(
+                f"Radarr refresh returned no releases for {release_title} "
+                f"(indexer transient failure or release no longer listed)"
+            )
+            return None
+
+        target = _normalize_release_title(release_title)
+        for r in fresh:
+            if _normalize_release_title(r.get("title") or "") == target:
+                guid = r.get("guid")
+                indexer_id = r.get("indexerId") or r.get("indexer_id")
+                if guid and indexer_id is not None:
+                    return guid, indexer_id
+
+        logger.warning(
+            f"Original release {release_title!r} not in refreshed results — "
+            f"refusing to substitute a different release"
+        )
+        return None
+
+    def _push_fallback(
+        self,
+        client: "RadarrClient | SonarrClient",
+        label: str,
+        release_title: str,
+        best_result: dict,
+    ) -> bool:
+        """
+        Push the release by downloadUrl, bypassing the guid cache. Best-effort:
+        skips cleanly if the original result dict lacks required fields.
+        """
+        download_url = best_result.get("downloadUrl") or best_result.get("download_url")
+        protocol = best_result.get("protocol")
+        publish_date = best_result.get("publishDate") or best_result.get("publish_date") or ""
+        indexer_name = best_result.get("indexer") or ""
+
+        if not download_url or not protocol:
+            logger.error(
+                f"Push fallback for {release_title} not possible "
+                f"(missing downloadUrl or protocol)"
+            )
+            return False
+
+        logger.info(f"Push fallback via {label}: {release_title}")
+        return client.push_release(
+            title=release_title,
+            download_url=download_url,
+            protocol=protocol,
+            publish_date=publish_date,
+            indexer=indexer_name,
+        )
 
     def execute_all(
         self, results: list[AnalysisResult], dry_run: bool = True

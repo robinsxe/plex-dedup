@@ -5,7 +5,11 @@ Radarr API client for managing movie monitoring status.
 import logging
 import requests
 
+from arr_common import StaleReleaseError
+
 logger = logging.getLogger(__name__)
+
+__all__ = ["RadarrClient", "StaleReleaseError"]
 
 
 class RadarrClient:
@@ -222,11 +226,22 @@ class RadarrClient:
 
         Returns:
             True if the grab was accepted.
+
+        Raises:
+            StaleReleaseError: if Radarr's release cache no longer knows this
+            guid (HTTP 404). Caller should re-search and retry.
         """
         try:
             self._post("release", {"guid": guid, "indexerId": indexer_id})
             logger.info(f"Radarr grabbed release {guid}")
             return True
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                raise StaleReleaseError(
+                    f"Radarr no longer has guid {guid} in release cache"
+                ) from e
+            logger.error(f"Radarr grab failed: {e}")
+            return False
         except Exception as e:
             logger.error(f"Radarr grab failed: {e}")
             return False

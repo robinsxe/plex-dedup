@@ -5,6 +5,8 @@ Sonarr API client for managing TV show/episode monitoring status.
 import logging
 import requests
 
+from arr_common import StaleReleaseError
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,11 +203,29 @@ class SonarrClient:
         """
         Grab a specific release for download. Sonarr handles the full
         lifecycle: download, import, and old file replacement.
+
+        Args:
+            guid: Release GUID from search_releases results.
+            indexer_id: Indexer ID from the release.
+
+        Returns:
+            True if the grab was accepted.
+
+        Raises:
+            StaleReleaseError: if Sonarr's release cache no longer knows this
+            guid (HTTP 404). Caller should re-search and retry.
         """
         try:
             self._post("release", {"guid": guid, "indexerId": indexer_id})
             logger.info(f"Sonarr grabbed release {guid}")
             return True
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                raise StaleReleaseError(
+                    f"Sonarr no longer has guid {guid} in release cache"
+                ) from e
+            logger.error(f"Sonarr grab failed: {e}")
+            return False
         except Exception as e:
             logger.error(f"Sonarr grab failed: {e}")
             return False
