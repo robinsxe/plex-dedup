@@ -350,12 +350,15 @@ class AnalysisResult:
     # IDs for arr integration
     imdb_id: str | None = None
     tmdb_id: str | None = None
+    tvdb_id: str | None = None
     rating_key: str = ""
 
     # TV-specific
     show_title: str = ""
     season_number: int | None = None
     episode_number: int | None = None
+    # Sonarr internal episode ID, resolved during search_replacements.
+    episode_id: int | None = None
 
     # Status
     status: str = "pending"  # pending, needs_replacement, has_subs, no_subs_available, replaced, error
@@ -377,10 +380,12 @@ class AnalysisResult:
             "prowlarr_results": self.prowlarr_results,
             "imdb_id": self.imdb_id,
             "tmdb_id": self.tmdb_id,
+            "tvdb_id": self.tvdb_id,
             "rating_key": self.rating_key,
             "show_title": self.show_title,
             "season_number": self.season_number,
             "episode_number": self.episode_number,
+            "episode_id": self.episode_id,
             "status": self.status,
             "error": self.error,
         }
@@ -412,6 +417,32 @@ class LibraryAnalyzer:
         self._max_size_gb = float(os.environ.get("CONVERT_MAX_SIZE_GB", "25"))
         # Rejected quality keywords (case-insensitive)
         self._rejected_qualities = {"remux", "2160p", "4k", "uhd"}
+        # When true, refresh the *arr release cache right before each grab.
+        # Eliminates the 404 round-trip for batches where search_replacements
+        # ran long enough ago that the cache is guaranteed to be cold.
+        self._grab_refresh_before = os.environ.get(
+            "GRAB_REFRESH_BEFORE", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        # Per-batch grab counters; reset on each execute_all invocation.
+        self._grab_stats = self._empty_grab_stats()
+
+    @staticmethod
+    def _empty_grab_stats() -> dict:
+        return {
+            "grabbed_direct": 0,
+            "stale_recovered": 0,
+            "push_fallback_used": 0,
+            "failed_unrecoverable": 0,
+        }
+
+    def reset_grab_stats(self) -> None:
+        """
+        Reset per-batch grab telemetry counters. ``execute_all`` calls this
+        automatically; direct callers of ``execute_replacement`` (e.g. the
+        web UI or single-item CLI flows) should invoke this themselves
+        before a batch if they want clean counter values.
+        """
+        self._grab_stats = self._empty_grab_stats()
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -679,6 +710,7 @@ class LibraryAnalyzer:
                     recommended_release=None,
                     imdb_id=item.get("imdb_id"),
                     tmdb_id=item.get("tmdb_id"),
+                    tvdb_id=item.get("tvdb_id"),
                     rating_key=item.get("rating_key", ""),
                     show_title=item.get("show_title", ""),
                     season_number=item.get("season_number"),
@@ -717,6 +749,7 @@ class LibraryAnalyzer:
                 recommended_release=recommended,
                 imdb_id=item.get("imdb_id"),
                 tmdb_id=item.get("tmdb_id"),
+                tvdb_id=item.get("tvdb_id"),
                 rating_key=item.get("rating_key", ""),
                 show_title=item.get("show_title", ""),
                 season_number=item.get("season_number"),
@@ -786,6 +819,28 @@ class LibraryAnalyzer:
                 return entry
         return None
 
+    def _resolve_sonarr_episode_id(self, result: AnalysisResult) -> int | None:
+        """
+        Resolve a Sonarr internal episode_id for a TV AnalysisResult by
+        looking up the series (tvdb/imdb/title) then the episode
+        (season/episode number). Returns None if anything is missing.
+        """
+        if result.season_number is None or result.episode_number is None:
+            return None
+        series = self.sonarr.find_series(
+            tvdb_id=result.tvdb_id,
+            imdb_id=result.imdb_id,
+            title=result.show_title or result.title,
+        )
+        if not series or "id" not in series:
+            return None
+        episode = self.sonarr.find_episode(
+            series["id"], result.season_number, result.episode_number
+        )
+        if not episode or "id" not in episode:
+            return None
+        return episode["id"]
+
     def search_replacements(
         self, results: list[AnalysisResult], limit: int = 0,
         progress_callback=None,
@@ -845,11 +900,13 @@ class LibraryAnalyzer:
                     movie_id = radarr_movie["id"]
                     all_results = self.radarr.search_releases(movie_id)
                 else:
-                    # For TV, find in Sonarr
-                    # TODO: implement Sonarr episode search
-                    logger.info(f"  TV search not yet implemented via Sonarr")
-                    result.prowlarr_results = []
-                    continue
+                    episode_id = self._resolve_sonarr_episode_id(result)
+                    if episode_id is None:
+                        logger.info(f"  Not found in Sonarr — skipping")
+                        result.prowlarr_results = []
+                        continue
+                    result.episode_id = episode_id
+                    all_results = self.sonarr.search_releases(episode_id)
 
                 if not all_results:
                     logger.info(f"  No releases found on indexers — adding to skip list")
@@ -986,6 +1043,9 @@ class LibraryAnalyzer:
             )
             return True
 
+        if self._grab_refresh_before:
+            best_result = self._refreshed_best_result(result, best_result)
+
         try:
             success = self._grab_with_retry(result, best_result)
 
@@ -1020,6 +1080,9 @@ class LibraryAnalyzer:
         guid is evicted (HTTP 404 on POST /api/v3/release), re-search to refresh
         the cache, find the same release by title, and retry. As a last resort,
         push by downloadUrl which bypasses the guid cache entirely.
+
+        Unrecoverable failures are added to the skip tracker so subsequent
+        scans don't immediately re-attempt the same broken release.
         """
         is_movie = result.media_type == "movie"
         client: "RadarrClient | SonarrClient" = self.radarr if is_movie else self.sonarr
@@ -1030,36 +1093,121 @@ class LibraryAnalyzer:
 
         logger.info(f"Grabbing via {label}: {release_title}")
         try:
-            return client.grab_release(guid, indexer_id)
+            if client.grab_release(guid, indexer_id):
+                self._grab_stats["grabbed_direct"] += 1
+                return True
         except StaleReleaseError as e:
             logger.warning(f"{label} cache stale for {release_title} ({e}) — refreshing")
 
-        # Refresh cache and retry (movie path only — Sonarr episode_id not tracked)
-        if is_movie:
-            refreshed = self._refresh_radarr_release(result, release_title)
-            if refreshed:
-                new_guid, new_indexer = refreshed
-                logger.info(
-                    f"Retrying grab via Radarr with refreshed guid for {release_title}"
+        # Refresh cache and retry (symmetric for movies + TV).
+        refreshed = (
+            self._refresh_radarr_release(result, release_title) if is_movie
+            else self._refresh_sonarr_release(result, release_title)
+        )
+        if refreshed:
+            new_guid, new_indexer = refreshed
+            logger.info(
+                f"Retrying grab via {label} with refreshed guid for {release_title}"
+            )
+            try:
+                if client.grab_release(new_guid, new_indexer):
+                    self._grab_stats["stale_recovered"] += 1
+                    return True
+                logger.warning(
+                    f"{label} retry returned failure for {release_title} — falling back to push"
                 )
-                try:
-                    if client.grab_release(new_guid, new_indexer):
-                        return True
-                    logger.warning(
-                        f"Radarr retry returned failure for {release_title} — falling back to push"
-                    )
-                except StaleReleaseError:
-                    logger.warning(
-                        f"Radarr still 404 after refresh for {release_title} — falling back to push"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Radarr retry raised {type(e).__name__} for {release_title} ({e}) "
-                        f"— falling back to push"
-                    )
+            except StaleReleaseError:
+                logger.warning(
+                    f"{label} still 404 after refresh for {release_title} — falling back to push"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"{label} retry raised {type(e).__name__} for {release_title} ({e}) "
+                    f"— falling back to push"
+                )
 
         # Final fallback: push by URL (bypasses guid cache)
-        return self._push_fallback(client, label, release_title, best_result)
+        if self._push_fallback(client, label, release_title, best_result):
+            self._grab_stats["push_fallback_used"] += 1
+            return True
+
+        self._grab_stats["failed_unrecoverable"] += 1
+        try:
+            self.skip_tracker.mark_skipped(
+                result, reason="stale_grab_unrecoverable", defer_save=True
+            )
+        except Exception as e:
+            logger.warning(f"Could not mark {result.display_title} as skipped: {e}")
+        return False
+
+    def _refreshed_best_result(
+        self, result: "AnalysisResult", best_result: dict
+    ) -> dict:
+        """
+        Proactively refresh the *arr release cache and return a best_result
+        with a fresh guid/indexerId. Returns the original dict untouched if
+        refresh found no match. Never mutates the input. Triggered by the
+        GRAB_REFRESH_BEFORE env flag.
+        """
+        is_movie = result.media_type == "movie"
+        label = "Radarr" if is_movie else "Sonarr"
+        release_title = best_result.get("title") or result.recommended_release or ""
+
+        refreshed = (
+            self._refresh_radarr_release(result, release_title) if is_movie
+            else self._refresh_sonarr_release(result, release_title)
+        )
+        if not refreshed:
+            return best_result
+
+        new_guid, new_indexer = refreshed
+        old_indexer = best_result.get("indexerId") or best_result.get("indexer_id")
+        if new_guid == best_result.get("guid") and new_indexer == old_indexer:
+            return best_result
+
+        logger.info(f"Pre-grab refresh updated guid for {release_title} via {label}")
+        updated = dict(best_result)
+        updated["guid"] = new_guid
+        updated["indexerId"] = new_indexer
+        return updated
+
+    def _refresh_sonarr_release(
+        self, result: "AnalysisResult", release_title: str
+    ) -> tuple[str, int] | None:
+        """
+        Re-run Sonarr's interactive search and locate the same release by
+        normalized title. Returns (guid, indexerId) on match, None otherwise.
+
+        Requires ``result.episode_id`` (populated by search_replacements).
+        """
+        if not result.episode_id:
+            logger.warning(
+                f"Skipping Sonarr refresh for {result.display_title}: "
+                f"no episode_id"
+            )
+            return None
+
+        fresh = self.sonarr.search_releases(result.episode_id)
+        if not fresh:
+            logger.warning(
+                f"Sonarr refresh returned no releases for {release_title} "
+                f"(indexer transient failure or release no longer listed)"
+            )
+            return None
+
+        target = _normalize_release_title(release_title)
+        for r in fresh:
+            if _normalize_release_title(r.get("title") or "") == target:
+                guid = r.get("guid")
+                indexer_id = r.get("indexerId") or r.get("indexer_id")
+                if guid and indexer_id is not None:
+                    return guid, indexer_id
+
+        logger.warning(
+            f"Original release {release_title!r} not in refreshed Sonarr results — "
+            f"refusing to substitute a different release"
+        )
+        return None
 
     def _refresh_radarr_release(
         self, result: "AnalysisResult", release_title: str
@@ -1153,6 +1301,9 @@ class LibraryAnalyzer:
             f"replacements for {len(needs_replacement)} items"
         )
 
+        # Reset per-batch grab telemetry.
+        self.reset_grab_stats()
+
         success = 0
         failed = 0
         skipped = 0
@@ -1167,18 +1318,33 @@ class LibraryAnalyzer:
             else:
                 failed += 1
 
+        # Flush deferred skip-tracker writes from unrecoverable grabs.
+        try:
+            self.skip_tracker.flush()
+        except Exception as e:
+            logger.warning(f"Could not flush skip tracker: {e}")
+
+        stats = dict(self._grab_stats)
         summary = {
             "total": len(needs_replacement),
             "success": success,
             "failed": failed,
             "skipped": skipped,
             "dry_run": dry_run,
+            "grab_stats": stats,
         }
 
         logger.info(
             f"Execution complete: {success} succeeded, "
             f"{failed} failed, {skipped} skipped"
         )
+        if not dry_run and any(stats.values()):
+            logger.info(
+                f"Grab telemetry: direct={stats['grabbed_direct']}, "
+                f"stale_recovered={stats['stale_recovered']}, "
+                f"push_fallback={stats['push_fallback_used']}, "
+                f"unrecoverable={stats['failed_unrecoverable']}"
+            )
         return summary
 
     # ------------------------------------------------------------------ #

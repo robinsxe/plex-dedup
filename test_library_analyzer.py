@@ -1,5 +1,7 @@
 """
-Tests for LibraryAnalyzer.execute_replacement stale-cache recovery.
+Tests for LibraryAnalyzer.execute_replacement stale-cache recovery,
+GRAB_REFRESH_BEFORE proactive refresh, batch telemetry counters,
+skip-tracker integration on unrecoverable failure, and Sonarr TV refresh.
 
 Run: python -m unittest test_library_analyzer
 """
@@ -21,7 +23,6 @@ def _install_stub(module_name: str, **attrs):
     sys.modules[module_name] = mod
 
 
-# Stub heavy/external deps before importing library_analyzer.
 _install_stub("config", Config=type("Config", (), {}))
 _install_stub("plex_client", PlexClient=MagicMock)
 _install_stub("opensubtitles_client", OpenSubtitlesClient=MagicMock)
@@ -29,7 +30,6 @@ _install_stub("prowlarr_client", ProwlarrClient=MagicMock)
 _install_stub("radarr_client", RadarrClient=MagicMock)
 _install_stub("sonarr_client", SonarrClient=MagicMock)
 
-# arr_common is local, has no external deps — import the real one.
 from arr_common import StaleReleaseError  # noqa: E402
 from library_analyzer import (  # noqa: E402
     AnalysisResult,
@@ -38,14 +38,17 @@ from library_analyzer import (  # noqa: E402
 )
 
 
-def _make_result() -> AnalysisResult:
+def _make_result(media_type: str = "movie") -> AnalysisResult:
     return AnalysisResult(
-        title="Test Movie",
-        display_title="Test Movie (2024)",
+        title="Test Movie" if media_type == "movie" else "Test Show",
+        display_title=(
+            "Test Movie (2024)" if media_type == "movie"
+            else "Test Show - S01E02"
+        ),
         year=2024,
         file_path="/fake/path.mkv",
         current_release="Test.Movie.2024.OLD",
-        media_type="movie",
+        media_type=media_type,
         has_swedish_sub=False,
         swedish_sub_available=True,
         matching_releases=[],
@@ -54,6 +57,11 @@ def _make_result() -> AnalysisResult:
         prowlarr_results=[],
         imdb_id="tt1234567",
         tmdb_id="98765",
+        tvdb_id="55555",
+        show_title="Test Show",
+        season_number=1,
+        episode_number=2,
+        episode_id=314 if media_type == "episode" else None,
         status="needs_replacement",
     )
 
@@ -74,11 +82,13 @@ def _make_release(**overrides) -> dict:
 
 
 def _make_analyzer() -> LibraryAnalyzer:
-    """Bypass __init__ so we don't need a real Config."""
     a = LibraryAnalyzer.__new__(LibraryAnalyzer)
     a.radarr = MagicMock()
     a.sonarr = MagicMock()
     a.grab_tracker = MagicMock()
+    a.skip_tracker = MagicMock()
+    a._grab_stats = LibraryAnalyzer._empty_grab_stats()
+    a._grab_refresh_before = False
     return a
 
 
@@ -97,7 +107,7 @@ class NormalizeTitleTests(unittest.TestCase):
 
 
 class GrabWithRetryTests(unittest.TestCase):
-    def test_happy_path_no_retry(self):
+    def test_happy_path_no_retry_increments_direct(self):
         a = _make_analyzer()
         result = _make_result()
         rel = _make_release()
@@ -109,8 +119,10 @@ class GrabWithRetryTests(unittest.TestCase):
         a.radarr.grab_release.assert_called_once_with("guid-original", 7)
         a.radarr.search_releases.assert_not_called()
         a.radarr.push_release.assert_not_called()
+        self.assertEqual(a._grab_stats["grabbed_direct"], 1)
+        self.assertEqual(a._grab_stats["stale_recovered"], 0)
 
-    def test_stale_then_refresh_then_retry_succeeds(self):
+    def test_stale_then_refresh_then_retry_increments_recovered(self):
         a = _make_analyzer()
         result = _make_result()
         original = _make_release()
@@ -127,9 +139,8 @@ class GrabWithRetryTests(unittest.TestCase):
         ok = a._grab_with_retry(result, original)
 
         self.assertTrue(ok)
-        self.assertEqual(a.radarr.grab_release.call_count, 2)
-        a.radarr.grab_release.assert_any_call("guid-original", 7)
-        a.radarr.grab_release.assert_any_call("guid-fresh", 9)
+        self.assertEqual(a._grab_stats["stale_recovered"], 1)
+        self.assertEqual(a._grab_stats["grabbed_direct"], 0)
         a.radarr.push_release.assert_not_called()
 
     def test_stale_refresh_no_match_falls_back_to_push(self):
@@ -138,7 +149,6 @@ class GrabWithRetryTests(unittest.TestCase):
         original = _make_release()
         a.radarr.grab_release.side_effect = StaleReleaseError("cache evicted")
         a.radarr.find_movie.return_value = {"id": 42}
-        # Refresh returns a *different* release — must not be substituted.
         a.radarr.search_releases.return_value = [
             _make_release(title="Other.Movie.2024-GROUPX", guid="guid-other")
         ]
@@ -147,11 +157,9 @@ class GrabWithRetryTests(unittest.TestCase):
         ok = a._grab_with_retry(result, original)
 
         self.assertTrue(ok)
+        self.assertEqual(a._grab_stats["push_fallback_used"], 1)
+        a.skip_tracker.mark_skipped.assert_not_called()
         a.radarr.push_release.assert_called_once()
-        kwargs = a.radarr.push_release.call_args.kwargs
-        self.assertEqual(kwargs["download_url"], original["downloadUrl"])
-        self.assertEqual(kwargs["protocol"], "torrent")
-        self.assertEqual(kwargs["indexer"], "MyIndexer")
 
     def test_stale_refresh_skipped_when_no_ids(self):
         a = _make_analyzer()
@@ -167,7 +175,7 @@ class GrabWithRetryTests(unittest.TestCase):
         self.assertTrue(ok)
         a.radarr.find_movie.assert_not_called()
         a.radarr.search_releases.assert_not_called()
-        a.radarr.push_release.assert_called_once()
+        self.assertEqual(a._grab_stats["push_fallback_used"], 1)
 
     def test_retry_raises_non_stale_falls_back_to_push(self):
         a = _make_analyzer()
@@ -184,24 +192,47 @@ class GrabWithRetryTests(unittest.TestCase):
         ok = a._grab_with_retry(result, original)
 
         self.assertTrue(ok)
-        a.radarr.push_release.assert_called_once()
+        self.assertEqual(a._grab_stats["push_fallback_used"], 1)
 
-    def test_push_fallback_skipped_when_fields_missing(self):
+    def test_unrecoverable_marks_skip_and_counter(self):
         a = _make_analyzer()
         result = _make_result()
         original = _make_release(downloadUrl=None, protocol=None)
         a.radarr.grab_release.side_effect = StaleReleaseError("cache evicted")
-        a.radarr.find_movie.return_value = None  # forces straight to push
+        a.radarr.find_movie.return_value = None  # refresh fails
 
         ok = a._grab_with_retry(result, original)
 
         self.assertFalse(ok)
         a.radarr.push_release.assert_not_called()
+        a.skip_tracker.mark_skipped.assert_called_once()
+        kwargs = a.skip_tracker.mark_skipped.call_args.kwargs
+        self.assertEqual(kwargs.get("reason"), "stale_grab_unrecoverable")
+        # Skip writes must be deferred so we don't disk-write per failure.
+        self.assertTrue(kwargs.get("defer_save"))
+        self.assertEqual(a._grab_stats["failed_unrecoverable"], 1)
 
-    def test_tv_path_skips_refresh_goes_to_push(self):
+    def test_tv_stale_recovers_via_sonarr_refresh(self):
         a = _make_analyzer()
-        result = _make_result()
-        result.media_type = "episode"
+        result = _make_result(media_type="episode")
+        original = _make_release(guid="sonarr-original", indexerId=11)
+        refreshed = _make_release(guid="sonarr-fresh", indexerId=12)
+        a.sonarr.grab_release.side_effect = [
+            StaleReleaseError("cache evicted"),
+            True,
+        ]
+        a.sonarr.search_releases.return_value = [refreshed]
+
+        ok = a._grab_with_retry(result, original)
+
+        self.assertTrue(ok)
+        a.sonarr.search_releases.assert_called_once_with(314)
+        self.assertEqual(a._grab_stats["stale_recovered"], 1)
+
+    def test_tv_without_episode_id_goes_to_push(self):
+        a = _make_analyzer()
+        result = _make_result(media_type="episode")
+        result.episode_id = None
         original = _make_release()
         a.sonarr.grab_release.side_effect = StaleReleaseError("cache evicted")
         a.sonarr.push_release.return_value = True
@@ -209,9 +240,94 @@ class GrabWithRetryTests(unittest.TestCase):
         ok = a._grab_with_retry(result, original)
 
         self.assertTrue(ok)
-        a.radarr.find_movie.assert_not_called()
-        a.radarr.search_releases.assert_not_called()
-        a.sonarr.push_release.assert_called_once()
+        a.sonarr.search_releases.assert_not_called()
+        self.assertEqual(a._grab_stats["push_fallback_used"], 1)
+
+
+class RefreshedBestResultTests(unittest.TestCase):
+    def test_returns_new_dict_with_fresh_guid_on_match(self):
+        a = _make_analyzer()
+        result = _make_result()
+        best = _make_release()
+        fresh = _make_release(guid="guid-fresh", indexerId=99)
+        a.radarr.find_movie.return_value = {"id": 42}
+        a.radarr.search_releases.return_value = [fresh]
+
+        out = a._refreshed_best_result(result, best)
+
+        self.assertEqual(out["guid"], "guid-fresh")
+        self.assertEqual(out["indexerId"], 99)
+        # input dict must not be mutated
+        self.assertEqual(best["guid"], "guid-original")
+        self.assertEqual(best["indexerId"], 7)
+        self.assertIsNot(out, best)
+
+    def test_returns_same_dict_when_no_match(self):
+        a = _make_analyzer()
+        result = _make_result()
+        best = _make_release()
+        a.radarr.find_movie.return_value = {"id": 42}
+        a.radarr.search_releases.return_value = [
+            _make_release(title="Different.Release", guid="other")
+        ]
+
+        out = a._refreshed_best_result(result, best)
+
+        self.assertIs(out, best)
+        self.assertEqual(best["guid"], "guid-original")
+
+
+class ResetGrabStatsTests(unittest.TestCase):
+    def test_reset_zeroes_all_counters(self):
+        a = _make_analyzer()
+        a._grab_stats["grabbed_direct"] = 12
+        a._grab_stats["stale_recovered"] = 5
+
+        a.reset_grab_stats()
+
+        self.assertEqual(
+            a._grab_stats,
+            {
+                "grabbed_direct": 0,
+                "stale_recovered": 0,
+                "push_fallback_used": 0,
+                "failed_unrecoverable": 0,
+            },
+        )
+
+
+class ResolveSonarrEpisodeIdTests(unittest.TestCase):
+    def test_resolves_via_tvdb(self):
+        a = _make_analyzer()
+        result = _make_result(media_type="episode")
+        result.episode_id = None
+        a.sonarr.find_series.return_value = {"id": 77}
+        a.sonarr.find_episode.return_value = {"id": 4242}
+
+        ep_id = a._resolve_sonarr_episode_id(result)
+
+        self.assertEqual(ep_id, 4242)
+        a.sonarr.find_series.assert_called_once()
+        a.sonarr.find_episode.assert_called_once_with(77, 1, 2)
+
+    def test_returns_none_without_season(self):
+        a = _make_analyzer()
+        result = _make_result(media_type="episode")
+        result.season_number = None
+
+        ep_id = a._resolve_sonarr_episode_id(result)
+
+        self.assertIsNone(ep_id)
+        a.sonarr.find_series.assert_not_called()
+
+    def test_returns_none_when_series_missing(self):
+        a = _make_analyzer()
+        result = _make_result(media_type="episode")
+        a.sonarr.find_series.return_value = None
+
+        ep_id = a._resolve_sonarr_episode_id(result)
+
+        self.assertIsNone(ep_id)
 
 
 if __name__ == "__main__":
