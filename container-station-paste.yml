@@ -68,6 +68,8 @@ services:
       - OPENSUBTITLES_USERNAME=your-opensubtitles-username
       - OPENSUBTITLES_PASSWORD=your-opensubtitles-password
       - SUBTITLE_LANGUAGES=sv,en
+      - SUBTITLE_DAILY_LIMIT=20
+      - SUBTITLE_QUEUE_HOUR=4
       - SUBTITLE_MATCH_TAGS=NORDIC,SWE,SWESUB,SWEDISH
       - SKIP_EXPIRY_DAYS=30
 
