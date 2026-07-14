@@ -352,6 +352,8 @@ class AnalysisResult:
     tmdb_id: str | None = None
     tvdb_id: str | None = None
     rating_key: str = ""
+    # Show-level IMDB id for episodes (imdb_id is the episode's own, if any)
+    show_imdb_id: str | None = None
 
     # TV-specific
     show_title: str = ""
@@ -382,6 +384,7 @@ class AnalysisResult:
             "tmdb_id": self.tmdb_id,
             "tvdb_id": self.tvdb_id,
             "rating_key": self.rating_key,
+            "show_imdb_id": self.show_imdb_id,
             "show_title": self.show_title,
             "season_number": self.season_number,
             "episode_number": self.episode_number,
@@ -503,20 +506,23 @@ class LibraryAnalyzer:
         if item.get("media_type") == "episode":
             search_kwargs["season_number"] = item.get("season_number")
             search_kwargs["episode_number"] = item.get("episode_number")
+            # The API expects the show's id as parent_imdb_id for episode
+            # searches — passing it as imdb_id returns zero matches
+            if item.get("show_imdb_id"):
+                search_kwargs["parent_imdb_id"] = item["show_imdb_id"]
 
         if item.get("imdb_id"):
             search_kwargs["imdb_id"] = item["imdb_id"]
         if item.get("tmdb_id"):
             search_kwargs["tmdb_id"] = item["tmdb_id"]
-        if not item.get("imdb_id") and not item.get("tmdb_id"):
+        if not (item.get("imdb_id") or item.get("tmdb_id") or item.get("show_imdb_id")):
             query = item.get("show_title") or item.get("title", "")
             search_kwargs["query"] = query
 
-        try:
-            results = self.opensubs.search_subtitles(**search_kwargs)
-        except Exception as e:
-            logger.error(f"OpenSubtitles search failed for {item.get('title')}: {e}")
-            return []
+        # Failures propagate (transient ones as SubtitleSearchError) so
+        # analyze() marks the item "error" instead of "no subs available" —
+        # which would put it on a 30-day cooldown
+        results = self.opensubs.search_subtitles(**search_kwargs)
 
         # Filter to Swedish results and build ReleaseMatch objects
         matches: list[ReleaseMatch] = []
@@ -712,6 +718,7 @@ class LibraryAnalyzer:
                     tmdb_id=item.get("tmdb_id"),
                     tvdb_id=item.get("tvdb_id"),
                     rating_key=item.get("rating_key", ""),
+                    show_imdb_id=item.get("show_imdb_id"),
                     show_title=item.get("show_title", ""),
                     season_number=item.get("season_number"),
                     episode_number=item.get("episode_number"),
@@ -751,6 +758,7 @@ class LibraryAnalyzer:
                 tmdb_id=item.get("tmdb_id"),
                 tvdb_id=item.get("tvdb_id"),
                 rating_key=item.get("rating_key", ""),
+                show_imdb_id=item.get("show_imdb_id"),
                 show_title=item.get("show_title", ""),
                 season_number=item.get("season_number"),
                 episode_number=item.get("episode_number"),
@@ -829,7 +837,7 @@ class LibraryAnalyzer:
             return None
         series = self.sonarr.find_series(
             tvdb_id=result.tvdb_id,
-            imdb_id=result.imdb_id,
+            imdb_id=result.show_imdb_id or result.imdb_id,
             title=result.show_title or result.title,
         )
         if not series or "id" not in series:

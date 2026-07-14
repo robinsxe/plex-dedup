@@ -162,6 +162,9 @@ Settings → General → API Key (in each app's web UI)
 | `OPENSUBTITLES_PASSWORD` | — | OpenSubtitles password |
 | `SUBTITLE_LANGUAGES` | `sv,en` | Comma-separated ISO 639-1 codes |
 | `SUBTITLE_MATCH_TAGS` | `NORDIC,SWE,SWESUB,SWEDISH` | Release tags to look for |
+| `SUBTITLE_AUTO_DOWNLOAD` | `true` | Process the subtitle queue automatically once a day |
+| `SUBTITLE_DAILY_LIMIT` | `20` | Max queue items per daily run (OpenSubtitles free tier = 20 downloads/day) |
+| `SUBTITLE_QUEUE_HOUR` | `4` | Hour of day (0-23) for the automatic queue run |
 | `DRY_RUN` | `true` | Preview mode — no files changed |
 | `KEEP_STRATEGY` | `best_quality` | `best_quality`, `largest_file`, or `newest` |
 | `AUTO_UNMONITOR` | `true` | Unmonitor in Radarr/Sonarr after dedup |
@@ -207,7 +210,7 @@ network_mode: host
 - **Scan all or selective** — Movies only, TV only, or both
 - **Expandable details** — See exactly which files get kept/removed and why
 - **Per-item or bulk execution** — Process one movie or select many at once
-- **Dry run toggle** — Safe preview mode, always on by default
+- **Dry run toggle** — Safe preview mode, always on by default. For the subtitle queue, dry run only reports what would happen — it never changes the queue
 - **Subtitle scanner** — Find and download missing Swedish subtitles
 - **Swedish Convert** — Analyze library for Swedish sub availability, search Prowlarr, grab replacements
 

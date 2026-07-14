@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 
 from config import Config
 from plex_client import PlexClient
-from opensubtitles_client import OpenSubtitlesClient
+from opensubtitles_client import (
+    STATUS_FAILURE,
+    DownloadLimitReached,
+    OpenSubtitlesClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,17 +173,36 @@ class SubtitleManager:
 
             logger.info(f"[{i}/{total}] Processing: {display}")
 
-            sub_result = self.opensubs.process_media_item(
-                file_path=item["file_path"],
-                languages=item.get("missing_languages", langs),
-                imdb_id=item.get("imdb_id"),
-                tmdb_id=item.get("tmdb_id"),
-                media_type=item["media_type"],
-                season_number=item.get("season_number"),
-                episode_number=item.get("episode_number"),
-                title=item.get("show_title") or item.get("title"),
-                dry_run=is_dry_run,
-            )
+            try:
+                sub_result = self.opensubs.process_media_item(
+                    file_path=item["file_path"],
+                    languages=item.get("missing_languages", langs),
+                    imdb_id=item.get("imdb_id"),
+                    tmdb_id=item.get("tmdb_id"),
+                    parent_imdb_id=item.get("show_imdb_id"),
+                    media_type=item["media_type"],
+                    season_number=item.get("season_number"),
+                    episode_number=item.get("episode_number"),
+                    title=item.get("show_title") or item.get("title"),
+                    dry_run=is_dry_run,
+                )
+            except DownloadLimitReached as e:
+                # Keep languages that downloaded before the limit hit so
+                # counts and the Plex refresh see them
+                partial = getattr(e, "partial_results", None)
+                if partial:
+                    results.append(SubtitleResult(
+                        title=item.get("title", ""),
+                        display_title=display,
+                        file_path=item["file_path"],
+                        media_type=item["media_type"],
+                        languages=partial,
+                    ))
+                logger.warning(
+                    f"Daily download limit reached — stopping after "
+                    f"{len(results)} of {total} items"
+                )
+                break
 
             result = SubtitleResult(
                 title=item.get("title", ""),
@@ -260,12 +283,28 @@ class SubtitleManager:
                     languages=langs,
                     imdb_id=item.get("imdb_id"),
                     tmdb_id=item.get("tmdb_id"),
+                    parent_imdb_id=item.get("show_imdb_id"),
                     media_type=item.get("media_type", "movie"),
                     season_number=item.get("season_number"),
                     episode_number=item.get("episode_number"),
                     title=item.get("show_title") or item.get("title"),
                     dry_run=is_dry_run,
                 )
+            except DownloadLimitReached as e:
+                partial = getattr(e, "partial_results", None)
+                if partial:
+                    results.append(SubtitleResult(
+                        title=item.get("title", ""),
+                        display_title=display,
+                        file_path=item.get("file_path", ""),
+                        media_type=item.get("media_type", "movie"),
+                        languages=partial,
+                    ))
+                logger.warning(
+                    f"Daily download limit reached — stopping after "
+                    f"{len(results)} of {total} items"
+                )
+                break
             except Exception as e:
                 logger.error(f"[{i}/{total}] Failed to process {display}: {e}")
                 sub_result = {
@@ -310,6 +349,7 @@ class SubtitleManager:
         found = 0
         not_found = 0
         already_exist = 0
+        failed = 0
 
         for r in results:
             for lang, info in r.languages.items():
@@ -322,6 +362,8 @@ class SubtitleManager:
                     already_exist += 1
                 elif status == "not_found":
                     not_found += 1
+                elif status in STATUS_FAILURE:
+                    failed += 1
 
         return {
             "total_items_processed": total,
@@ -329,5 +371,6 @@ class SubtitleManager:
             "subtitles_found_dry_run": found,
             "subtitles_not_available": not_found,
             "subtitles_already_exist": already_exist,
+            "subtitles_failed": failed,
             "languages": self.config.subtitle_languages,
         }

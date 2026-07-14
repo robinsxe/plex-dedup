@@ -17,6 +17,34 @@ logger = logging.getLogger(__name__)
 # Rate limiting: OpenSubtitles allows ~5 requests/second for logged-in users
 RATE_LIMIT_DELAY = 0.25  # seconds between requests
 
+# (connect, read) timeout for every HTTP call — without it a stalled call
+# blocks the daily scheduler thread until container restart
+REQUEST_TIMEOUT = (10, 60)
+
+
+class DownloadLimitReached(Exception):
+    """Daily download quota is spent (HTTP 406). Callers should stop
+    downloading and keep remaining work queued for the next day."""
+
+
+class SubtitleSearchError(Exception):
+    """A subtitle search failed for transient reasons (rate limit, 5xx,
+    network) — distinct from a search that genuinely found nothing."""
+
+
+# download_subtitle error reasons that retrying cannot fix (bad credentials,
+# malformed API response) — callers should fail fast instead of retrying
+PERMANENT_DOWNLOAD_ERRORS = frozenset(
+    {"not_logged_in", "reauthentication_failed", "no_download_link"}
+)
+
+# Per-language statuses emitted by process_media_item, single-sourced here so
+# consumers (subtitle_queue, subtitle_manager) classify consistently
+STATUS_TRANSIENT = frozenset({"search_error", "download_failed"})
+STATUS_FAILURE = frozenset(
+    {"download_failed", "no_file_id", "error", "search_error", "video_missing"}
+)
+
 
 class OpenSubtitlesClient:
     """Client for OpenSubtitles.com REST API."""
@@ -45,13 +73,17 @@ class OpenSubtitlesClient:
 
     def _get(self, endpoint: str, params: dict = None) -> dict:
         self._rate_limit()
-        resp = self.session.get(f"{self.BASE_URL}/{endpoint}", params=params)
+        resp = self.session.get(
+            f"{self.BASE_URL}/{endpoint}", params=params, timeout=REQUEST_TIMEOUT
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, endpoint: str, data: dict = None) -> dict:
         self._rate_limit()
-        resp = self.session.post(f"{self.BASE_URL}/{endpoint}", json=data)
+        resp = self.session.post(
+            f"{self.BASE_URL}/{endpoint}", json=data, timeout=REQUEST_TIMEOUT
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -60,6 +92,11 @@ class OpenSubtitlesClient:
         if not self.username or not self.password:
             logger.warning("OpenSubtitles credentials not set — downloads will fail")
             return False
+
+        # Drop any stale token so a failed re-login can't leave an expired
+        # Bearer header on the session
+        self._token = None
+        self.session.headers.pop("Authorization", None)
 
         try:
             data = self._post("login", {
@@ -135,6 +172,7 @@ class OpenSubtitlesClient:
         languages: list[str],
         imdb_id: str = None,
         tmdb_id: str = None,
+        parent_imdb_id: str = None,
         file_hash: str = None,
         query: str = None,
         season_number: int = None,
@@ -146,8 +184,10 @@ class OpenSubtitlesClient:
 
         Args:
             languages: List of ISO 639-1 codes (e.g., ["sv", "en"])
-            imdb_id: IMDB ID (e.g., "tt1234567")
+            imdb_id: IMDB ID of the movie/episode itself (e.g., "tt1234567")
             tmdb_id: TMDB ID
+            parent_imdb_id: IMDB ID of the parent TV show — the API expects
+                the show id here (not in imdb_id) for episode searches
             file_hash: OpenSubtitles file hash
             query: Text search query
             season_number: For TV episodes
@@ -156,6 +196,10 @@ class OpenSubtitlesClient:
 
         Returns:
             List of subtitle results sorted by relevance.
+
+        Raises:
+            SubtitleSearchError: on HTTP/network failure, so callers can
+                tell a failed search apart from an empty result.
         """
         params = {
             "languages": ",".join(languages),
@@ -167,6 +211,8 @@ class OpenSubtitlesClient:
                 params["season_number"] = season_number
             if episode_number is not None:
                 params["episode_number"] = episode_number
+            if parent_imdb_id:
+                params["parent_imdb_id"] = parent_imdb_id.removeprefix("tt")
         else:
             params["type"] = "movie"
 
@@ -177,29 +223,29 @@ class OpenSubtitlesClient:
         # Then by external IDs
         if imdb_id:
             # Strip 'tt' prefix if present, API wants just the number
-            imdb_num = imdb_id.replace("tt", "")
-            params["imdb_id"] = imdb_num
+            params["imdb_id"] = imdb_id.removeprefix("tt")
 
         if tmdb_id:
             params["tmdb_id"] = tmdb_id
 
         # Fallback to text search
-        if query and not (imdb_id or tmdb_id or file_hash):
+        if query and not (imdb_id or tmdb_id or parent_imdb_id or file_hash):
             params["query"] = query
 
         try:
             data = self._get("subtitles", params=params)
-            results = data.get("data", [])
-            logger.info(f"Found {len(results)} subtitle results")
-            return results
         except requests.HTTPError as e:
             logger.error(f"Subtitle search failed: {e}")
-            return []
+            raise SubtitleSearchError(str(e)) from e
         except Exception as e:
             logger.error(f"Subtitle search error: {e}")
-            return []
+            raise SubtitleSearchError(str(e)) from e
 
-    def download_subtitle(self, file_id: int, output_path: str) -> bool:
+        results = data.get("data", [])
+        logger.info(f"Found {len(results)} subtitle results")
+        return results
+
+    def download_subtitle(self, file_id: int, output_path: str) -> tuple[bool, str | None]:
         """
         Download a subtitle file by its file_id.
 
@@ -208,48 +254,71 @@ class OpenSubtitlesClient:
             output_path: Where to save the .srt file.
 
         Returns:
-            True if download succeeded.
+            (success, error_reason) — error_reason is None on success.
+
+        Raises:
+            DownloadLimitReached: when the daily quota is spent (HTTP 406).
         """
         if not self._token:
             if not self.login():
                 logger.error("Cannot download: not logged in")
-                return False
+                return False, "not_logged_in"
 
-        try:
-            data = self._post("download", {"file_id": file_id})
-            download_url = data.get("link")
-
-            if not download_url:
-                logger.error("No download link in response")
-                return False
-
-            # Download the actual subtitle file
-            self._rate_limit()
-            resp = self.session.get(download_url)
-            resp.raise_for_status()
-
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-            with open(output_path, "wb") as f:
-                f.write(resp.content)
-
-            remaining = data.get("remaining", "?")
-            logger.info(
-                f"Downloaded subtitle to {output_path} "
-                f"(downloads remaining: {remaining})"
-            )
-            return True
-
-        except requests.HTTPError as e:
-            if e.response and e.response.status_code == 406:
-                logger.error("Download limit reached for today")
-            else:
+        # Single attempt loop with at most one 401-triggered re-login, so
+        # every failure mode (including Timeout/OSError on the retry) maps
+        # to the same (success, reason) contract from one place
+        relogin_done = False
+        while True:
+            try:
+                return self._download_once(file_id, output_path)
+            except requests.HTTPError as e:
+                # NOTE: e.response truthiness is False for 4xx/5xx — compare
+                # against None explicitly
+                status = e.response.status_code if e.response is not None else None
+                if status == 406:
+                    logger.error("Download limit reached for today")
+                    raise DownloadLimitReached(
+                        "daily download limit reached (HTTP 406)"
+                    ) from e
+                if status == 401 and not relogin_done:
+                    # Token expired (~24h) — re-login once and retry
+                    relogin_done = True
+                    logger.info("OpenSubtitles token rejected (401), re-authenticating")
+                    if not self.login():
+                        return False, "reauthentication_failed"
+                    continue
                 logger.error(f"Subtitle download failed: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Subtitle download error: {e}")
-            return False
+                return False, f"http_{status or 'error'}"
+            except Exception as e:
+                logger.error(f"Subtitle download error: {e}")
+                return False, str(e)
+
+    def _download_once(self, file_id: int, output_path: str) -> tuple[bool, str | None]:
+        """Single download attempt. Raises requests.HTTPError on HTTP failure."""
+        data = self._post("download", {"file_id": file_id})
+        download_url = data.get("link")
+
+        if not download_url:
+            logger.error("No download link in response")
+            return False, "no_download_link"
+
+        # Download the actual subtitle file
+        self._rate_limit()
+        resp = self.session.get(download_url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        with open(output_path, "wb") as f:
+            f.write(resp.content)
+
+        remaining = data.get("remaining", "?")
+        logger.info(
+            f"Downloaded subtitle to {output_path} "
+            f"(downloads remaining: {remaining})"
+        )
+        return True, None
 
     def find_best_subtitle(self, results: list[dict], language: str) -> dict | None:
         """
@@ -302,6 +371,7 @@ class OpenSubtitlesClient:
         languages: list[str],
         imdb_id: str = None,
         tmdb_id: str = None,
+        parent_imdb_id: str = None,
         media_type: str = "movie",
         season_number: int = None,
         episode_number: int = None,
@@ -313,8 +383,27 @@ class OpenSubtitlesClient:
 
         Returns:
             Dict with results per language.
+
+        Raises:
+            DownloadLimitReached: when the daily quota is spent mid-item.
         """
         results = {}
+
+        # A missing video file means the media volume is not mounted at the
+        # path Plex reports — downloading would consume quota and write the
+        # .srt into the container filesystem where Plex never sees it.
+        if not os.path.exists(file_path):
+            logger.error(
+                f"Video file not found: {file_path} — check that the media "
+                f"volume is mounted at the same path as in Plex"
+            )
+            return {
+                lang: {
+                    "status": "video_missing",
+                    "error": f"video file not found: {file_path}",
+                }
+                for lang in languages
+            }
 
         # Check which languages already exist
         for lang in languages:
@@ -331,16 +420,21 @@ class OpenSubtitlesClient:
             file_hash = self.compute_hash(file_path)
 
             # Search
-            search_results = self.search_subtitles(
-                languages=[lang],
-                imdb_id=imdb_id,
-                tmdb_id=tmdb_id,
-                file_hash=file_hash,
-                query=title,
-                season_number=season_number,
-                episode_number=episode_number,
-                media_type=media_type,
-            )
+            try:
+                search_results = self.search_subtitles(
+                    languages=[lang],
+                    imdb_id=imdb_id,
+                    tmdb_id=tmdb_id,
+                    parent_imdb_id=parent_imdb_id,
+                    file_hash=file_hash,
+                    query=title,
+                    season_number=season_number,
+                    episode_number=episode_number,
+                    media_type=media_type,
+                )
+            except SubtitleSearchError as e:
+                results[lang] = {"status": "search_error", "error": str(e)}
+                continue
 
             best = self.find_best_subtitle(search_results, lang)
 
@@ -369,11 +463,19 @@ class OpenSubtitlesClient:
                     f"{attrs.get('release', '?')}"
                 )
             else:
-                success = self.download_subtitle(file_id, sub_path)
+                try:
+                    success, error = self.download_subtitle(file_id, sub_path)
+                except DownloadLimitReached as e:
+                    # Preserve earlier languages' outcomes (files may already
+                    # be on disk) so callers can count/refresh them
+                    e.partial_results = results
+                    raise
                 results[lang] = {
                     "status": "downloaded" if success else "download_failed",
                     "path": sub_path if success else None,
                     "subtitle": attrs.get("release", "Unknown"),
                 }
+                if error:
+                    results[lang]["error"] = error
 
         return results

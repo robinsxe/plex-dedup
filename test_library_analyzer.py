@@ -6,29 +6,12 @@ skip-tracker integration on unrecoverable failure, and Sonarr TV refresh.
 Run: python -m unittest test_library_analyzer
 """
 
-import sys
-import types
 import unittest
 from unittest.mock import MagicMock
 
+import test_stubs
 
-def _install_stub(module_name: str, **attrs):
-    """Register a minimal stub module so library_analyzer can import it
-    without pulling in real deps (dotenv, requests, etc)."""
-    if module_name in sys.modules:
-        return
-    mod = types.ModuleType(module_name)
-    for k, v in attrs.items():
-        setattr(mod, k, v)
-    sys.modules[module_name] = mod
-
-
-_install_stub("config", Config=type("Config", (), {}))
-_install_stub("plex_client", PlexClient=MagicMock)
-_install_stub("opensubtitles_client", OpenSubtitlesClient=MagicMock)
-_install_stub("prowlarr_client", ProwlarrClient=MagicMock)
-_install_stub("radarr_client", RadarrClient=MagicMock)
-_install_stub("sonarr_client", SonarrClient=MagicMock)
+test_stubs.install_common_stubs()
 
 from arr_common import StaleReleaseError  # noqa: E402
 from library_analyzer import (  # noqa: E402
@@ -90,6 +73,52 @@ def _make_analyzer() -> LibraryAnalyzer:
     a._grab_stats = LibraryAnalyzer._empty_grab_stats()
     a._grab_refresh_before = False
     return a
+
+
+class FindSwedishReleasesTests(unittest.TestCase):
+    def _analyzer(self) -> LibraryAnalyzer:
+        a = LibraryAnalyzer.__new__(LibraryAnalyzer)
+        a.opensubs = MagicMock()
+        return a
+
+    def test_search_error_propagates_instead_of_no_subs(self):
+        from opensubtitles_client import SubtitleSearchError
+        a = self._analyzer()
+        a.opensubs.search_subtitles.side_effect = SubtitleSearchError("HTTP 429")
+
+        with self.assertRaises(SubtitleSearchError):
+            a._find_swedish_releases(
+                {"media_type": "movie", "imdb_id": "tt1", "title": "X"}
+            )
+
+    def test_generic_error_propagates_to_analyze_handler(self):
+        a = self._analyzer()
+        a.opensubs.search_subtitles.side_effect = RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            a._find_swedish_releases(
+                {"media_type": "movie", "imdb_id": "tt1", "title": "X"}
+            )
+
+    def test_episode_search_uses_parent_imdb_id_not_query(self):
+        a = self._analyzer()
+        a.opensubs.search_subtitles.return_value = []
+
+        a._find_swedish_releases({
+            "media_type": "episode",
+            "show_imdb_id": "tt0000100",
+            "season_number": 1,
+            "episode_number": 2,
+            "title": "Ep",
+            "show_title": "Test Show",
+        })
+
+        kwargs = a.opensubs.search_subtitles.call_args.kwargs
+        self.assertEqual(kwargs["parent_imdb_id"], "tt0000100")
+        self.assertNotIn("imdb_id", kwargs)
+        self.assertNotIn("query", kwargs)
+        self.assertEqual(kwargs["season_number"], 1)
+        self.assertEqual(kwargs["episode_number"], 2)
 
 
 class NormalizeTitleTests(unittest.TestCase):

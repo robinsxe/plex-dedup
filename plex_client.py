@@ -381,7 +381,11 @@ class PlexClient:
                                     "year": getattr(episode, "year", None),
                                     "file_path": part.file or "",
                                     "rating_key": str(episode.ratingKey),
-                                    "imdb_id": show_ids.get("imdb") or ep_ids.get("imdb"),
+                                    # Episode-level imdb only — the show id in
+                                    # imdb_id collapses per-episode dedup keys,
+                                    # trackers, and OpenSubtitles searches
+                                    "imdb_id": ep_ids.get("imdb"),
+                                    "show_imdb_id": show_ids.get("imdb"),
                                     "tvdb_id": show_ids.get("tvdb"),
                                     "media_type": "episode",
                                     "duration": episode.duration,

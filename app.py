@@ -15,7 +15,7 @@ from config import Config
 from dedup_engine import DedupEngine, DeduplicationPlan
 from subtitle_manager import SubtitleManager
 from library_analyzer import LibraryAnalyzer, AnalysisResult
-from subtitle_queue import SubtitleQueue
+from subtitle_queue import SubtitleQueue, scheduler_due
 
 _SENSITIVE_PATTERN = re.compile(
     r'(api[_-]?key|token|password|authorization|bearer|secret)[=:\s]+\S+',
@@ -144,6 +144,11 @@ def index():
 STATUS_CACHE_TTL = 60  # seconds — avoid hammering all services on every poll
 _status_cache = {"data": None, "expires": 0}
 
+# OpenSubtitles discourages frequent /login (tokens last ~24h), so the
+# credential validity check is cached much longer than the status cache
+OS_LOGIN_CHECK_TTL = 1800
+_os_login_cache = {"ok": False, "expires": 0.0, "fingerprint": None}
+
 
 @app.route("/api/status")
 def api_status():
@@ -168,6 +173,22 @@ def api_status():
                     config.opensubtitles_password,
                 )
                 opensubs_ok = os_client.test_connection()
+                # The API key alone can't download — a wrong username or
+                # password would otherwise show green while every download
+                # fails with 401. Login checks are cached separately since
+                # OpenSubtitles rate-limits /login.
+                if opensubs_ok and config.opensubtitles_username:
+                    fingerprint = (
+                        config.opensubtitles_api_key,
+                        config.opensubtitles_username,
+                        config.opensubtitles_password,
+                    )
+                    if (_os_login_cache["fingerprint"] != fingerprint
+                            or now >= _os_login_cache["expires"]):
+                        _os_login_cache["ok"] = os_client.login()
+                        _os_login_cache["expires"] = now + OS_LOGIN_CHECK_TTL
+                        _os_login_cache["fingerprint"] = fingerprint
+                    opensubs_ok = _os_login_cache["ok"]
             except Exception as e:
                 logger.warning(f"OpenSubtitles connection test failed: {e}")
 
@@ -592,6 +613,8 @@ def api_convert_download_subs():
             "year": r.year,
             "imdb_id": r.imdb_id,
             "tmdb_id": r.tmdb_id,
+            "show_imdb_id": r.show_imdb_id,
+            "rating_key": r.rating_key,
             "season_number": r.season_number,
             "episode_number": r.episode_number,
             "show_title": r.show_title,
@@ -697,6 +720,7 @@ def api_config():
             # Queue
             "subtitle_daily_limit": config.subtitle_daily_limit,
             "subtitle_queue_hour": config.subtitle_queue_hour,
+            "subtitle_auto_download": config.subtitle_auto_download,
         })
 
     data = request.json or {}
@@ -743,7 +767,7 @@ def api_config():
             setattr(config, attr, value)
 
     # Boolean fields
-    bool_fields = ["dry_run", "auto_unmonitor", "delete_files"]
+    bool_fields = ["dry_run", "auto_unmonitor", "delete_files", "subtitle_auto_download"]
     for key in bool_fields:
         if key in data:
             setattr(config, key, bool(data[key]))
@@ -808,6 +832,8 @@ def api_subtitle_queue():
             "year": r.year,
             "imdb_id": r.imdb_id,
             "tmdb_id": r.tmdb_id,
+            "show_imdb_id": r.show_imdb_id,
+            "rating_key": r.rating_key,
             "season_number": r.season_number,
             "episode_number": r.episode_number,
             "show_title": r.show_title,
@@ -838,48 +864,44 @@ def api_subtitle_queue_process():
 # ---- Background Scheduler ----
 
 def _queue_scheduler():
-    """Background thread that processes the subtitle queue daily."""
+    """Background thread that processes the subtitle queue daily.
+
+    Ticks once a minute so config changes (queue hour, auto download)
+    apply without a restart. Runs at most once per calendar day, the
+    first tick inside the configured hour.
+    """
     logger.info(
-        f"Subtitle queue scheduler started "
-        f"(runs daily at {config.subtitle_queue_hour:02d}:00)"
+        f"Subtitle queue scheduler started (checks every minute; runs once "
+        f"daily during the configured hour — currently "
+        f"{config.subtitle_queue_hour:02d}:00)"
     )
+    last_run_date = None
+    last_disabled_notice = None
     while True:
         try:
             now = time.localtime()
-            # Calculate seconds until next run
-            target_hour = config.subtitle_queue_hour
-            if now.tm_hour < target_hour:
-                wait_hours = target_hour - now.tm_hour
-            elif now.tm_hour == target_hour and now.tm_min == 0:
-                wait_hours = 0
-            else:
-                wait_hours = 24 - now.tm_hour + target_hour
-
-            wait_seconds = (wait_hours * 3600) - (now.tm_min * 60) - now.tm_sec
-            if wait_seconds <= 0:
-                wait_seconds = 86400  # Wait a full day
-
-            next_run = time.strftime(
-                "%Y-%m-%d %H:%M:%S",
-                time.localtime(time.time() + wait_seconds),
-            )
-            logger.info(f"Queue scheduler: next run at {next_run}")
-
-            # Sleep in 60s chunks so we can pick up config changes
-            slept = 0
-            while slept < wait_seconds:
-                time.sleep(min(60, wait_seconds - slept))
-                slept += 60
-
-            if sub_queue.pending_count > 0:
-                logger.info(
-                    f"Queue scheduler: processing {sub_queue.pending_count} "
-                    f"pending items"
-                )
-                sub_queue.process(dry_run=False)
-            else:
-                logger.info("Queue scheduler: no pending items, skipping")
-
+            if scheduler_due(now, config.subtitle_queue_hour, last_run_date):
+                today = time.strftime("%Y-%m-%d", now)
+                if not config.subtitle_auto_download:
+                    # Don't consume the day's run — enabling the toggle
+                    # later within the hour should still trigger it
+                    if last_disabled_notice != today:
+                        last_disabled_notice = today
+                        logger.info(
+                            "Queue scheduler: automatic processing disabled "
+                            "(subtitle_auto_download), skipping"
+                        )
+                elif sub_queue.pending_count > 0:
+                    last_run_date = today
+                    logger.info(
+                        f"Queue scheduler: processing {sub_queue.pending_count} "
+                        f"pending items"
+                    )
+                    sub_queue.process(dry_run=False)
+                else:
+                    last_run_date = today
+                    logger.info("Queue scheduler: no pending items, skipping")
+            time.sleep(60)
         except Exception as e:
             logger.error(f"Queue scheduler error: {e}", exc_info=True)
             time.sleep(3600)  # Wait an hour on error

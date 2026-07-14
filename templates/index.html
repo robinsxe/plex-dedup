@@ -219,6 +219,7 @@
                 <button id="btn-conv-clear" onclick="clearGrabbed()" style="display:none;">🗑 Clear Grabbed</button>
                 <button id="btn-conv-clear-skipped" onclick="clearSkipped()" style="display:none;">🗑 Clear Skipped</button>
                 <button id="btn-conv-clear-cooldown" onclick="clearCooldown()" style="display:none;">🗑 Clear Cooldown</button>
+                <button id="btn-conv-clear-failed" onclick="clearFailedQueue()" style="display:none;">🗑 Clear Failed Subs</button>
                 <span id="conv-grabbed-count" style="font-size:13px;color:var(--text-dim);"></span>
                 <span id="conv-skipped-count" style="font-size:13px;color:var(--text-dim);"></span>
                 <span id="conv-cooldown-count" style="font-size:13px;color:var(--text-dim);"></span>
@@ -294,6 +295,7 @@
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
                 <label style="font-size:13px;color:var(--text-dim);">Daily Download Limit<input type="number" id="cfg-daily-limit" class="cfg-input" min="1" max="200" placeholder="20"></label>
                 <label style="font-size:13px;color:var(--text-dim);">Queue Processing Hour (0-23)<input type="number" id="cfg-queue-hour" class="cfg-input" min="0" max="23" placeholder="4"></label>
+                <label class="toggle"><input type="checkbox" id="cfg-sub-auto"> Process queue automatically (daily)</label>
             </div>
 
             <div style="display:flex;gap:10px;align-items:center;">
@@ -733,17 +735,26 @@ async function processQueue() {
     const btn=document.getElementById('btn-conv-process-queue');
     btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Processing...';
     const dry=document.getElementById('conv-dry-run').checked;
-    await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:dry})});
     try {
         const resp=await fetch('/api/subtitles/queue/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dry_run:dry})});
         const data=await resp.json();
         if(!data.ok){toast('Failed: '+data.error,'error');return;}
         const msg=dry
-            ?`Dry run: ${data.downloaded} would be downloaded`
-            :`Downloaded ${data.downloaded}, failed ${data.failed}${data.limit_reached?' (daily limit reached)':''}. ${data.remaining} remaining.`;
+            ?`Dry run: ${data.would_process} would be processed (queue unchanged)`
+            :`Downloaded ${data.downloaded}${data.already_had?`, ${data.already_had} already on disk`:''}, failed ${data.failed}${data.will_retry?`, ${data.will_retry} will retry`:''}${data.limit_reached?' (daily limit reached)':''}. ${data.remaining} remaining.`;
         toast(msg,data.limit_reached?'info':'success');
         loadQueueCount();
     } catch(e){toast('Error: '+e.message,'error');} finally{btn.disabled=false;btn.innerHTML='▶ Process Queue';}
+}
+
+async function clearFailedQueue() {
+    try {
+        const resp=await fetch('/api/subtitles/queue',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'failed'})});
+        const data=await resp.json();
+        if(!data.ok){toast('Failed: '+data.error,'error');return;}
+        toast(`Cleared ${data.cleared} failed queue item(s) — re-run Analyze + Add to Queue to retry them`,'success');
+        loadQueueCount();
+    } catch(e){toast('Error: '+e.message,'error');}
 }
 
 async function loadQueueCount() {
@@ -752,15 +763,17 @@ async function loadQueueCount() {
         const data=await resp.json();
         const el=document.getElementById('conv-queue-count');
         const btn=document.getElementById('btn-conv-process-queue');
+        const clearBtn=document.getElementById('btn-conv-clear-failed');
+        const bits=[];
         if(data.pending>0){
-            el.textContent=`${data.pending} in download queue`;
+            bits.push(`${data.pending} in download queue`);
             btn.style.display='';
-        } else {
-            el.textContent='';
         }
-        if(data.last_run){
-            el.textContent+=(el.textContent?' | ':'')+'Last run: '+data.last_run;
-        }
+        if(data.failed>0) bits.push(`${data.failed} failed`);
+        clearBtn.style.display=data.failed>0?'':'none';
+        if(data.last_run) bits.push('Last run: '+data.last_run);
+        el.textContent=bits.join(' | ');
+        el.title=(data.failed_items||[]).map(f=>`${f.title}: ${f.error}`).join('\n');
     } catch(e) { /* ignore */ }
 }
 
@@ -828,6 +841,7 @@ async function loadSettings() {
         document.getElementById('cfg-delete-files').checked=c.delete_files!==false;
         document.getElementById('cfg-daily-limit').value=c.subtitle_daily_limit||20;
         document.getElementById('cfg-queue-hour').value=c.subtitle_queue_hour!=null?c.subtitle_queue_hour:4;
+        document.getElementById('cfg-sub-auto').checked=c.subtitle_auto_download!==false;
     } catch(e) { /* ignore on init */ }
 }
 
@@ -853,6 +867,7 @@ async function saveSettings() {
         delete_files:document.getElementById('cfg-delete-files').checked,
         subtitle_daily_limit:parseInt(document.getElementById('cfg-daily-limit').value)||20,
         subtitle_queue_hour:parseInt(document.getElementById('cfg-queue-hour').value)||4,
+        subtitle_auto_download:document.getElementById('cfg-sub-auto').checked,
     };
     try {
         const resp=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
