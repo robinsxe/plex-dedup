@@ -3,12 +3,13 @@ Configuration management for Plex Dedup.
 Loads settings from .env file, environment variables, or persisted settings file.
 """
 
-import json
 import logging
 import os
 import stat
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
+
+from state_io import atomic_write_json, load_json
 
 load_dotenv()
 
@@ -113,9 +114,7 @@ class Config:
             "delete_files": self.delete_files,
         }
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
+            atomic_write_json(path, data)
             os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600 — owner only
             logger.info(f"Settings saved to {path}")
             return True
@@ -125,17 +124,12 @@ class Config:
 
     @classmethod
     def _load_settings_file(cls, path: str = SETTINGS_FILE) -> dict:
-        """Load saved settings from JSON file. Returns empty dict on failure."""
-        try:
-            with open(path) as f:
-                data = json.load(f)
+        """Load saved settings. Missing file -> empty dict; a corrupt file is
+        quarantined (not silently overwritten) so env vars take over cleanly."""
+        data = load_json(path, default={})
+        if data:
             logger.info(f"Loaded settings from {path}")
-            return data
-        except FileNotFoundError:
-            return {}
-        except Exception as e:
-            logger.warning(f"Could not load settings from {path}: {e}")
-            return {}
+        return data
 
     @classmethod
     def from_env(cls) -> "Config":

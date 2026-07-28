@@ -4,13 +4,13 @@ Queues subtitle downloads and processes them respecting the OpenSubtitles
 daily download limit (20/day for free accounts).
 """
 
-import json
 import logging
 import os
 import threading
 import time
 
 from config import Config
+from state_io import atomic_write_json, load_json
 from opensubtitles_client import (
     PERMANENT_DOWNLOAD_ERRORS,
     STATUS_TRANSIENT,
@@ -51,54 +51,47 @@ class SubtitleQueue:
         self._load()
 
     def _load(self):
-        try:
-            with open(self._path) as f:
-                raw = json.load(f)
-            self._data = raw.get("queue", [])
-            # Crash recovery: reset any "processing" items back to pending
-            recovered = 0
-            for item in self._data:
-                if item.get("status") == "processing":
-                    item["status"] = "pending"
-                    recovered += 1
-            # Migration: entries written before the episode/show id split
-            # carry the show-level IMDB id in imdb_id — searching with it
-            # as the episode id returns nothing
-            migrated = 0
-            for item in self._data:
-                if (item.get("media_type") == "episode"
-                        and item.get("imdb_id")
-                        and not item.get("show_imdb_id")):
-                    item["show_imdb_id"] = item["imdb_id"]
-                    item["imdb_id"] = None
-                    migrated += 1
-            if recovered:
-                logger.info(f"Recovered {recovered} items stuck in 'processing' state")
-            if migrated:
-                logger.info(f"Migrated {migrated} legacy episode queue entries")
-            if recovered or migrated:
-                self._save()
-            self._last_run = raw.get("last_run")
-            self._last_run_result = raw.get("last_run_result")
-            logger.info(
-                f"Loaded subtitle queue: {len(self._data)} items "
-                f"({self.pending_count} pending)"
-            )
-        except FileNotFoundError:
-            self._data = []
-        except Exception as e:
-            logger.warning(f"Could not load subtitle queue: {e}")
-            self._data = []
+        # A missing file yields {} (fresh queue); a corrupt file is quarantined
+        # by load_json rather than silently dropping all pending work.
+        raw = load_json(self._path, default={})
+        self._data = raw.get("queue", [])
+        # Crash recovery: reset any "processing" items back to pending
+        recovered = 0
+        for item in self._data:
+            if item.get("status") == "processing":
+                item["status"] = "pending"
+                recovered += 1
+        # Migration: entries written before the episode/show id split
+        # carry the show-level IMDB id in imdb_id — searching with it
+        # as the episode id returns nothing
+        migrated = 0
+        for item in self._data:
+            if (item.get("media_type") == "episode"
+                    and item.get("imdb_id")
+                    and not item.get("show_imdb_id")):
+                item["show_imdb_id"] = item["imdb_id"]
+                item["imdb_id"] = None
+                migrated += 1
+        if recovered:
+            logger.info(f"Recovered {recovered} items stuck in 'processing' state")
+        if migrated:
+            logger.info(f"Migrated {migrated} legacy episode queue entries")
+        if recovered or migrated:
+            self._save()
+        self._last_run = raw.get("last_run")
+        self._last_run_result = raw.get("last_run_result")
+        logger.info(
+            f"Loaded subtitle queue: {len(self._data)} items "
+            f"({self.pending_count} pending)"
+        )
 
     def _save(self):
         try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "w") as f:
-                json.dump({
-                    "queue": self._data,
-                    "last_run": self._last_run,
-                    "last_run_result": self._last_run_result,
-                }, f, indent=2)
+            atomic_write_json(self._path, {
+                "queue": self._data,
+                "last_run": self._last_run,
+                "last_run_result": self._last_run_result,
+            })
         except Exception as e:
             logger.error(f"Could not save subtitle queue: {e}")
 

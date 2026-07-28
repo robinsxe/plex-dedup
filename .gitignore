@@ -1,0 +1,29 @@
+# Secrets & local environment — never commit these
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# App runtime state (normally the /data Docker volume; created locally if you
+# run outside Docker with default paths)
+/data/
+settings.json
+secret_key
+grabbed.json
+skipped.json
+cooldown.json
+sub_queue.json
+*.corrupt-*
+
+# Assistant / tooling artifacts
+.omc/
+memory/
+
+# OS
+.DS_Store

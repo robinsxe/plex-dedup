@@ -9,6 +9,10 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# (connect, read) seconds — a missing read timeout would let a wedged Prowlarr
+# connection hang the caller indefinitely.
+REQUEST_TIMEOUT = (10, 120)
+
 # Category IDs used by Prowlarr/Newznab
 MOVIE_CATEGORIES = [2000]
 TV_CATEGORIES = [5000]
@@ -28,7 +32,10 @@ class ProwlarrClient:
 
     def _get(self, endpoint: str, params: dict = None) -> dict | list:
         """Send a GET request to the Prowlarr API."""
-        resp = self.session.get(f"{self.url}/api/v1/{endpoint}", params=params)
+        resp = self.session.get(
+            f"{self.url}/api/v1/{endpoint}", params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 

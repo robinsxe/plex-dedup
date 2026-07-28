@@ -1,0 +1,29 @@
+# Keep secrets, VCS, and local cruft out of the image build context.
+# Without this, `COPY . .` bakes a populated .env (Plex token, API keys) into an
+# image layer where it survives deletion and leaks if the image is pushed.
+.env
+.env.*
+.git
+.github
+.gitignore
+.dockerignore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Assistant / tooling artifacts
+.omc/
+memory/
+.claude/
+
+# Docs and tests aren't needed at runtime
+*.md
+test_*.py
+
+# Local runtime state and quarantined files
+/data/
+*.corrupt-*
+.DS_Store
