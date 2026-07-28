@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Plex Dedup — Sign in</title>
+    <style>
+        :root {
+            --bg: #0f0f0f; --surface: #1a1a1a; --surface2: #242424; --border: #333;
+            --text: #e4e4e4; --text-dim: #888; --accent: #e5a00d; --accent-hover: #f0b429;
+            --danger: #e53e3e; --radius: 8px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg); color: var(--text); line-height: 1.5;
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        }
+        .login-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 32px; width: 100%; max-width: 360px;
+        }
+        h1 { font-size: 20px; margin-bottom: 4px; }
+        .sub { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+        label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
+        input[type="password"] {
+            display: block; width: 100%; padding: 10px 12px; border-radius: var(--radius);
+            border: 1px solid var(--border); background: var(--surface2); color: var(--text);
+            font-size: 14px; margin-bottom: 16px;
+        }
+        input[type="password"]:focus { outline: none; border-color: var(--accent); }
+        button {
+            width: 100%; padding: 10px; border-radius: var(--radius); border: none;
+            background: var(--accent); color: #000; font-size: 14px; font-weight: 600;
+            cursor: pointer; transition: background 0.15s;
+        }
+        button:hover { background: var(--accent-hover); }
+        .error {
+            background: rgba(229, 62, 62, 0.15); border: 1px solid var(--danger);
+            color: var(--danger); padding: 8px 12px; border-radius: var(--radius);
+            font-size: 13px; margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <form class="login-card" method="POST" action="/login">
+        <h1>🎬 Plex Dedup</h1>
+        <div class="sub">Enter the dashboard password to continue.</div>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autofocus autocomplete="current-password">
+        <button type="submit">Sign in</button>
+    </form>
+</body>
+</html>

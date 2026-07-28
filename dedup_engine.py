@@ -400,7 +400,10 @@ class DedupEngine:
             return False
 
     def execute_all(self, plans: list[DeduplicationPlan] = None):
-        plans = plans or self._plans
+        # None means "no argument given — use the full scan result". An empty
+        # list means "nothing to do" and must NOT fall back to every plan, or a
+        # zero-match selection would delete the whole library.
+        plans = self._plans if plans is None else plans
         success = 0
         failed = 0
 

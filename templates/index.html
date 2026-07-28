@@ -329,6 +329,17 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// If the session expires (or auth is enabled while the page is open), every
+// API call returns 401 — bounce to the login page instead of silently failing.
+(function () {
+    const _origFetch = window.fetch;
+    window.fetch = async function (...args) {
+        const resp = await _origFetch.apply(this, args);
+        if (resp.status === 401) { window.location.href = '/login'; }
+        return resp;
+    };
+})();
+
 let plans = [];
 let allSelected = false;
 

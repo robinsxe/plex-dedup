@@ -74,6 +74,10 @@ services:
       # ---- Web ----
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8585
+      # Dashboard login. STRONGLY recommended — this UI can delete media and
+      # change settings. Set WEB_PASSWORD in your .env to require a password.
+      # Left blank = no login (a warning is logged on every start).
+      - WEB_PASSWORD=${WEB_PASSWORD:-}
       - TZ=${TZ:-Europe/Stockholm}
 
     volumes:

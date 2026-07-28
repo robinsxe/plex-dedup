@@ -85,6 +85,12 @@ class Config:
     # Web UI
     web_host: str = "0.0.0.0"
     web_port: int = 8585
+    # Dashboard auth. Empty password = unauthenticated (a startup warning is
+    # logged). web_auth_disabled silences that warning for deployments that
+    # intentionally run open behind a VPN/reverse proxy. Loaded from env only —
+    # never persisted to settings.json and never exposed via the config API.
+    web_password: str = ""
+    web_auth_disabled: bool = False
 
     def save_to_file(self, path: str = SETTINGS_FILE) -> bool:
         """Persist current config to a JSON file."""
@@ -192,6 +198,8 @@ class Config:
             schedule_cron_day_of_week=os.getenv("SCHEDULE_CRON_DAY_OF_WEEK", "sun"),
             web_host=os.getenv("WEB_HOST", "0.0.0.0"),
             web_port=int(os.getenv("WEB_PORT", "8585")),
+            web_password=os.getenv("WEB_PASSWORD", ""),
+            web_auth_disabled=os.getenv("WEB_AUTH_DISABLED", "false").lower() == "true",
         )
 
     def validate(self) -> list[str]:

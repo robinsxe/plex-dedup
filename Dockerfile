@@ -30,9 +30,9 @@ RUN mkdir -p /data/logs
 # Expose web port
 EXPOSE 8585
 
-# Health check
+# Health check — /healthz is unauthenticated and returns no sensitive data
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8585/api/status', timeout=5)" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8585/healthz', timeout=5).raise_for_status()" || exit 1
 
 # Default: launch web dashboard
 # Override with: docker run ... plex-dedup python cli.py dedup --live
