@@ -25,6 +25,10 @@ services:
     container_name: plex-dedup
     restart: unless-stopped
 
+    # Defense in depth — block privilege escalation via setuid binaries.
+    security_opt:
+      - no-new-privileges:true
+
     ports:
       - "8585:8585"
 
