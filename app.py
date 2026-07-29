@@ -3,13 +3,20 @@ Web dashboard for Plex Dedup.
 Provides a visual interface for managing duplicates and subtitles.
 """
 
+import hmac
 import logging
+import os
 import re
+import secrets
 import subprocess
 import threading
 import time
 from collections import deque
-from flask import Flask, render_template, jsonify, request
+from datetime import timedelta
+from urllib.parse import urlparse
+from flask import (
+    Flask, render_template, jsonify, request, session, redirect, url_for,
+)
 
 from config import Config
 from dedup_engine import DedupEngine, DeduplicationPlan
@@ -79,6 +86,116 @@ logging.getLogger().addHandler(log_buffer)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    # Lax stops the session cookie riding along on cross-site POST/PUT/DELETE,
+    # which is what neutralises CSRF against the destructive endpoints.
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+
+
+def _data_dir() -> str:
+    return os.path.dirname(os.getenv("SETTINGS_FILE", "/data/settings.json")) or "/data"
+
+
+def _load_secret_key() -> str:
+    """Flask session signing key. Prefer an explicit env var; otherwise persist
+    a random key under /data so sessions survive restarts (a changing key just
+    logs everyone out, never a security hole)."""
+    key = os.getenv("WEB_SECRET_KEY") or os.getenv("SECRET_KEY")
+    if key:
+        return key
+    path = os.path.join(_data_dir(), "secret_key")
+    try:
+        with open(path) as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    generated = secrets.token_hex(32)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(generated)
+        os.chmod(path, 0o600)
+    except Exception as e:
+        logger.warning(f"Could not persist session secret key to {path}: {e}")
+    return generated
+
+
+# Paths that never require auth (health probe + the login flow itself)
+_PUBLIC_PATHS = {"/healthz", "/login", "/logout"}
+
+
+def _auth_active() -> bool:
+    """True when a password is set and auth has not been explicitly disabled."""
+    return bool(config.web_password) and not config.web_auth_disabled
+
+
+def _same_origin(req) -> bool:
+    """Reject browser-driven cross-origin state changes (CSRF). Requests without
+    an Origin/Referer header (curl, the CLI, health probes) are allowed through —
+    an attacker cannot make a victim's browser omit those headers."""
+    for header in ("Origin", "Referer"):
+        value = req.headers.get(header)
+        if value:
+            return urlparse(value).netloc == req.host
+    return True
+
+
+@app.before_request
+def _auth_gate():
+    path = request.path
+    if path == "/healthz" or path.startswith("/static/"):
+        return None
+
+    # CSRF: block cross-origin mutations regardless of whether a password is set,
+    # so a malicious page cannot drive deletes even in unauthenticated mode.
+    if request.method in ("POST", "PUT", "DELETE") and path not in _PUBLIC_PATHS:
+        if not _same_origin(request):
+            return jsonify({"ok": False, "error": "Cross-origin request blocked"}), 403
+
+    if not _auth_active() or path in _PUBLIC_PATHS:
+        return None
+
+    if session.get("authed"):
+        return None
+
+    if path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "Authentication required"}), 401
+    return redirect(url_for("login"))
+
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated liveness probe — no sensitive data."""
+    return jsonify({"status": "ok"})
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not _auth_active():
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        supplied = request.form.get("password", "")
+        if hmac.compare_digest(supplied, config.web_password):
+            session.clear()
+            session["authed"] = True
+            session.permanent = True
+            return redirect(url_for("index"))
+        logger.warning("Failed dashboard login attempt from %s", request.remote_addr)
+        return render_template("login.html", error="Incorrect password"), 401
+    if session.get("authed"):
+        return redirect(url_for("index"))
+    return render_template("login.html", error=None)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 # App version — resolved once at startup
 def _get_version() -> str:
@@ -113,6 +230,20 @@ APP_VERSION = _get_version()
 
 # Global state
 config = Config.from_env()
+
+app.secret_key = _load_secret_key()
+app.permanent_session_lifetime = timedelta(days=30)
+if not _auth_active():
+    if config.web_auth_disabled:
+        logger.info("Dashboard auth explicitly disabled (WEB_AUTH_DISABLED=true)")
+    else:
+        logger.warning(
+            "No WEB_PASSWORD set — the dashboard is UNAUTHENTICATED. Anyone who "
+            "can reach port %s can delete media and change settings. Set "
+            "WEB_PASSWORD to require a login.",
+            config.web_port,
+        )
+
 engine = DedupEngine(config)
 sub_manager = SubtitleManager(config)
 analyzer = LibraryAnalyzer(config)
@@ -263,11 +394,22 @@ def api_execute():
         return jsonify({"ok": False, "error": "No scan results. Run a scan first."})
 
     plans_to_run = current_plans
-    if selected_keys:
+    if selected_keys is not None:
+        # An explicit selection was sent. Filter to it — and if nothing matches
+        # (stale UI selection, keys from a previous scan), do NOT fall through
+        # to running every plan. Refuse instead.
+        if not isinstance(selected_keys, list):
+            return jsonify({"ok": False, "error": "'selected' must be a list"}), 400
         plans_to_run = [
             p for p in current_plans
             if p.group.plex_rating_key in selected_keys
         ]
+        if not plans_to_run:
+            return jsonify({
+                "ok": False,
+                "error": "None of the selected items match the current scan. "
+                         "Re-scan and try again.",
+            }), 400
 
     result = engine.execute_all(plans_to_run)
     return jsonify({
@@ -912,7 +1054,6 @@ _scheduler_thread.start()
 
 
 def run():
-    import os
     debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
     app.run(host=config.web_host, port=config.web_port, debug=debug)
 

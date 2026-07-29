@@ -81,6 +81,10 @@ services:
       - TZ=Europe/Stockholm
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8585
+      # 🔴 SET A PASSWORD — this dashboard can delete media and change settings.
+      # Replace the value below. Leave it blank only if this NAS is never
+      # reachable from other devices (a warning is logged when it's empty).
+      - WEB_PASSWORD=CHANGE_ME_TO_A_PASSWORD
 
     volumes:
       # ============================================================
