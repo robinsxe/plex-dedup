@@ -9,6 +9,11 @@ from plexapi.video import Movie, Show, Episode
 
 logger = logging.getLogger(__name__)
 
+# (connect, read) seconds for raw session calls. delete_media uses the plexapi
+# session directly (bypassing plexapi's own query() timeout), so without this a
+# stalled delete would hang the caller until the container is restarted.
+REQUEST_TIMEOUT = (10, 120)
+
 
 @dataclass
 class MediaFile:
@@ -413,6 +418,7 @@ class PlexClient:
             url = f"{self.url}/library/metadata/{rating_key}/media/{media_id}"
             response = self.server._session.delete(
                 url, headers={"X-Plex-Token": self.token},
+                timeout=REQUEST_TIMEOUT,
             )
             if response.status_code in (200, 204):
                 logger.info(f"Deleted media {media_id} from {rating_key}")

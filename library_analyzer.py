@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 
 from config import Config
+from state_io import atomic_write_json, load_json
 from plex_client import PlexClient
 from opensubtitles_client import OpenSubtitlesClient
 from prowlarr_client import ProwlarrClient
@@ -46,23 +47,16 @@ class GrabTracker:
         self._load()
 
     def _load(self):
-        try:
-            with open(self._path) as f:
-                self._data = json.load(f)
-            logger.info(f"Loaded {len(self._data)} grabbed items from {self._path}")
-        except FileNotFoundError:
-            self._data = {}
-        except Exception as e:
-            logger.warning(f"Could not load grabbed DB: {e}")
-            self._data = {}
+        self._data = load_json(self._path)
+        logger.info(f"Loaded {len(self._data)} grabbed items from {self._path}")
 
-    def _save(self):
+    def _save(self) -> bool:
         try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "w") as f:
-                json.dump(self._data, f, indent=2)
+            atomic_write_json(self._path, dict(self._data))
+            return True
         except Exception as e:
             logger.error(f"Could not save grabbed DB: {e}")
+            return False
 
     def is_grabbed(self, imdb_id: str = None, tmdb_id: str = None,
                    rating_key: str = None) -> bool:
@@ -72,8 +66,10 @@ class GrabTracker:
                 return True
         return False
 
-    def mark_grabbed(self, result) -> None:
-        """Mark an AnalysisResult as grabbed."""
+    def mark_grabbed(self, result) -> bool:
+        """Mark an AnalysisResult as grabbed. Returns False if persistence
+        failed — the caller must surface that, since a lost grab record causes
+        the item to be re-grabbed (re-downloaded) on the next scan."""
         entry = {
             "title": result.display_title,
             "grabbed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -85,7 +81,7 @@ class GrabTracker:
             self._data[f"tmdb:{result.tmdb_id}"] = entry
         if result.rating_key:
             self._data[f"plex:{result.rating_key}"] = entry
-        self._save()
+        return self._save()
 
     def clear(self) -> int:
         """Clear all grabbed items. Returns count cleared."""
@@ -109,22 +105,13 @@ class SkipTracker:
         self._load()
 
     def _load(self):
-        try:
-            with open(self._path) as f:
-                self._data = json.load(f)
-            self._purge_expired()
-            logger.info(f"Loaded {len(self._data)} skipped items from {self._path}")
-        except FileNotFoundError:
-            self._data = {}
-        except Exception as e:
-            logger.warning(f"Could not load skipped DB: {e}")
-            self._data = {}
+        self._data = load_json(self._path)
+        self._purge_expired()
+        logger.info(f"Loaded {len(self._data)} skipped items from {self._path}")
 
     def _save(self):
         try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "w") as f:
-                json.dump(self._data, f, indent=2)
+            atomic_write_json(self._path, dict(self._data))
         except Exception as e:
             logger.error(f"Could not save skipped DB: {e}")
 
@@ -201,23 +188,14 @@ class SearchCooldownTracker:
         self._load()
 
     def _load(self):
-        try:
-            with open(self._path) as f:
-                self._data = json.load(f)
-            self._purge_expired()
-            logger.info(
-                f"Loaded {len(self._data)} cooldown items from {self._path}")
-        except FileNotFoundError:
-            self._data = {}
-        except Exception as e:
-            logger.warning(f"Could not load cooldown DB: {e}")
-            self._data = {}
+        self._data = load_json(self._path)
+        self._purge_expired()
+        logger.info(
+            f"Loaded {len(self._data)} cooldown items from {self._path}")
 
     def _save(self):
         try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "w") as f:
-                json.dump(self._data, f, indent=2)
+            atomic_write_json(self._path, dict(self._data))
         except Exception as e:
             logger.error(f"Could not save cooldown DB: {e}")
 
@@ -916,6 +894,19 @@ class LibraryAnalyzer:
                     result.episode_id = episode_id
                     all_results = self.sonarr.search_releases(episode_id)
 
+                if all_results is None:
+                    # The indexer search itself failed (Radarr/Sonarr down or
+                    # erroring) — distinct from "no releases found". Leave the
+                    # item unmarked so it retries on the next scan instead of
+                    # being skip-listed for SKIP_EXPIRY_DAYS after a transient
+                    # outage.
+                    logger.warning(
+                        "  Indexer search failed — leaving for retry "
+                        "(not skip-listed)"
+                    )
+                    result.prowlarr_results = []
+                    continue
+
                 if not all_results:
                     logger.info(f"  No releases found on indexers — adding to skip list")
                     result.prowlarr_results = []
@@ -1064,7 +1055,17 @@ class LibraryAnalyzer:
                 return False
 
             result.status = "replaced"
-            self.grab_tracker.mark_grabbed(result)
+            if not self.grab_tracker.mark_grabbed(result):
+                # The grab succeeded but we failed to record it. Surface this —
+                # otherwise the item is silently re-grabbed (re-downloaded) on
+                # every future scan because is_grabbed never sees it.
+                result.error = (
+                    "Grabbed, but failed to save the grab record — this item "
+                    "may be re-grabbed on the next scan (check /data is writable)"
+                )
+                logger.error(
+                    f"Grab succeeded but grab-tracker save failed for {release_title}"
+                )
             logger.info(
                 f"Successfully grabbed via {'Radarr' if result.media_type == 'movie' else 'Sonarr'}: "
                 f"{release_title}"

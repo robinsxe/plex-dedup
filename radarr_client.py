@@ -9,6 +9,11 @@ from arr_common import StaleReleaseError
 
 logger = logging.getLogger(__name__)
 
+# (connect, read) seconds. Without a read timeout a wedged Radarr connection
+# hangs the background scan thread forever (only a container restart recovers).
+# The read budget is generous because interactive indexer searches are slow.
+REQUEST_TIMEOUT = (10, 120)
+
 __all__ = ["RadarrClient", "StaleReleaseError"]
 
 
@@ -25,23 +30,31 @@ class RadarrClient:
         })
 
     def _get(self, endpoint: str, params: dict = None) -> dict | list:
-        resp = self.session.get(f"{self.url}/api/v3/{endpoint}", params=params)
+        resp = self.session.get(
+            f"{self.url}/api/v3/{endpoint}", params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, endpoint: str, data: dict) -> dict | list:
-        resp = self.session.post(f"{self.url}/api/v3/{endpoint}", json=data)
+        resp = self.session.post(
+            f"{self.url}/api/v3/{endpoint}", json=data, timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _put(self, endpoint: str, data: dict) -> dict:
-        resp = self.session.put(f"{self.url}/api/v3/{endpoint}", json=data)
+        resp = self.session.put(
+            f"{self.url}/api/v3/{endpoint}", json=data, timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _delete(self, endpoint: str, params: dict = None) -> bool:
         resp = self.session.delete(
-            f"{self.url}/api/v3/{endpoint}", params=params
+            f"{self.url}/api/v3/{endpoint}", params=params,
+            timeout=REQUEST_TIMEOUT,
         )
         return resp.status_code in (200, 204)
 
@@ -205,7 +218,10 @@ class RadarrClient:
             movie_id: Radarr internal movie ID.
 
         Returns:
-            List of available releases from all configured indexers.
+            List of available releases (possibly empty) on success, or None if
+            the search itself failed (Radarr down/error). None lets the caller
+            distinguish "genuinely no releases" from "couldn't ask" so a
+            transient outage does not get treated as an empty result.
         """
         try:
             results = self._get("release", params={"movieId": movie_id})
@@ -213,7 +229,7 @@ class RadarrClient:
             return results
         except Exception as e:
             logger.error(f"Radarr release search failed for movie {movie_id}: {e}")
-            return []
+            return None
 
     def grab_release(self, guid: str, indexer_id: int) -> bool:
         """

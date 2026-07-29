@@ -9,6 +9,11 @@ from arr_common import StaleReleaseError
 
 logger = logging.getLogger(__name__)
 
+# (connect, read) seconds. Without a read timeout a wedged Sonarr connection
+# hangs the background scan thread forever (only a container restart recovers).
+# The read budget is generous because interactive indexer searches are slow.
+REQUEST_TIMEOUT = (10, 120)
+
 
 class SonarrClient:
     """Client for interacting with Sonarr's API."""
@@ -23,23 +28,31 @@ class SonarrClient:
         })
 
     def _get(self, endpoint: str, params: dict = None) -> dict | list:
-        resp = self.session.get(f"{self.url}/api/v3/{endpoint}", params=params)
+        resp = self.session.get(
+            f"{self.url}/api/v3/{endpoint}", params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, endpoint: str, data: dict) -> dict | list:
-        resp = self.session.post(f"{self.url}/api/v3/{endpoint}", json=data)
+        resp = self.session.post(
+            f"{self.url}/api/v3/{endpoint}", json=data, timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _put(self, endpoint: str, data: dict) -> dict:
-        resp = self.session.put(f"{self.url}/api/v3/{endpoint}", json=data)
+        resp = self.session.put(
+            f"{self.url}/api/v3/{endpoint}", json=data, timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _delete(self, endpoint: str, params: dict = None) -> bool:
         resp = self.session.delete(
-            f"{self.url}/api/v3/{endpoint}", params=params
+            f"{self.url}/api/v3/{endpoint}", params=params,
+            timeout=REQUEST_TIMEOUT,
         )
         return resp.status_code in (200, 204)
 
@@ -190,6 +203,10 @@ class SonarrClient:
         """
         Search all indexers for available releases of an episode.
         Uses Sonarr's interactive search.
+
+        Returns a list (possibly empty) on success, or None if the search
+        itself failed, so the caller can tell "no releases" apart from
+        "couldn't ask" and avoid skip-listing on a transient outage.
         """
         try:
             results = self._get("release", params={"episodeId": episode_id})
@@ -197,7 +214,7 @@ class SonarrClient:
             return results
         except Exception as e:
             logger.error(f"Sonarr release search failed for episode {episode_id}: {e}")
-            return []
+            return None
 
     def grab_release(self, guid: str, indexer_id: int) -> bool:
         """
