@@ -170,8 +170,15 @@ Settings → General → API Key (in each app's web UI)
 | `AUTO_UNMONITOR` | `true` | Unmonitor in Radarr/Sonarr after dedup |
 | `DELETE_FILES` | `true` | Delete duplicate files from disk |
 | `RECYCLE_BIN` | — | Move files here instead of deleting |
-| `TZ` | `Europe/Stockholm` | Timezone |
+| `TZ` | `Europe/Stockholm` | Timezone (the image bundles tzdata, so this now takes effect instead of silently falling back to UTC) |
+| `WEB_HOST` | `0.0.0.0` | Dashboard bind address. Keep `0.0.0.0` under Docker — a loopback bind can't receive the published port |
 | `WEB_PORT` | `8585` | Dashboard port |
+| `SKIP_EXPIRY_DAYS` | `30` | Days an item with no indexer results stays skipped before retry (1–365) |
+| `SEARCH_COOLDOWN_DAYS` | `30` | Days before a scanned item is re-analyzed against OpenSubtitles (1–365) |
+| `CONVERT_MAX_SIZE_GB` | `25` | Reject replacement releases larger than this (0 = no limit) |
+| `GRAB_REFRESH_BEFORE` | `0` | Refresh the *arr release cache before each grab (`1`/`true` to enable) |
+
+**Advanced (state paths):** `SETTINGS_FILE`, `GRABBED_DB`, `SKIPPED_DB`, `COOLDOWN_DB`, and `QUEUE_DB` override where state is persisted (all default under `/data/`). You normally don't need to change these — just keep the `/data` volume mounted.
 
 ## Quality Scoring
 

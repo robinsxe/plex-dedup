@@ -11,6 +11,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# System timezone data — python:3.12-slim ships without it, so TZ=... and
+# time.localtime() silently fall back to UTC: the subtitle scheduler fires an
+# hour or two off and every log/UI timestamp drifts. Early, stable layer.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
