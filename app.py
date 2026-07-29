@@ -256,6 +256,9 @@ SCAN_TIMEOUT_SECONDS = 1800  # 30 minutes — auto-expire stale locks
 
 scan_lock = threading.Lock()
 scan_cancel = threading.Event()
+# Handle to the current convert-scan worker. Guarded by scan_lock; used to
+# guarantee at most one scan thread runs at a time.
+_scan_thread: threading.Thread | None = None
 scan_progress = {
     "running": False,
     "phase": "",  # "analyzing", "searching", "done", "error", "cancelled"
@@ -599,35 +602,52 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
 
 @app.route("/api/convert/scan", methods=["POST"])
 def api_convert_scan():
-    """Start library analysis in background."""
-    with scan_lock:
-        if scan_progress["running"]:
-            started = scan_progress.get("started_at")
-            if started and (time.time() - started) > SCAN_TIMEOUT_SECONDS:
-                logger.warning("Scan lock expired after timeout — resetting")
-                scan_progress.update({
-                    "running": False, "phase": "error",
-                    "error": "Scan timed out and was reset",
-                    "started_at": None,
-                })
-            else:
-                return jsonify({"ok": False, "error": "Scan already in progress"}), 409
-        scan_progress["running"] = True
-        scan_progress["started_at"] = time.time()
-        scan_cancel.clear()
-    data = request.json or {}
+    """Start library analysis in a background thread."""
+    global _scan_thread
+
+    # Parse and validate BEFORE claiming the running flag, so a malformed body
+    # (which makes request parsing raise) can never leave running=True with no
+    # worker thread behind it.
+    data = request.get_json(silent=True) or {}
     scan_type = data.get("scan_type", "movies")
     if scan_type not in ("movies", "tv", "all"):
-        with scan_lock:
-            scan_progress.update({"running": False, "started_at": None})
         return jsonify({"ok": False, "error": "Invalid scan_type"}), 400
     limit = data.get("limit", 0)
     search_limit = data.get("search_limit", 50)
 
-    thread = threading.Thread(
-        target=_run_convert_scan, args=(scan_type, limit, search_limit), daemon=True,
-    )
-    thread.start()
+    with scan_lock:
+        alive = _scan_thread is not None and _scan_thread.is_alive()
+        if alive:
+            started = scan_progress.get("started_at")
+            if started and (time.time() - started) > SCAN_TIMEOUT_SECONDS:
+                # The worker is wedged past the timeout. Signal it to stop, but
+                # do NOT start a second thread — that would run two scans over
+                # the same shared state. It exits at its next cancel checkpoint
+                # (HTTP calls are bounded by client timeouts now), after which a
+                # fresh scan can start.
+                scan_cancel.set()
+                logger.warning("Scan exceeded timeout — signalled cancel")
+                return jsonify({
+                    "ok": False,
+                    "error": "Previous scan is still stopping — try again shortly",
+                }), 409
+            return jsonify({"ok": False, "error": "Scan already in progress"}), 409
+
+        # No live worker (fresh start, clean finish, or a crash that left the
+        # flag stuck). Clearing cancel here can't drop a signal because nothing
+        # is running to observe it.
+        scan_cancel.clear()
+        scan_progress.update({
+            "running": True, "started_at": time.time(), "phase": "analyzing",
+            "current": 0, "total": 0, "current_title": "Starting...",
+            "error": None,
+        })
+        _scan_thread = threading.Thread(
+            target=_run_convert_scan, args=(scan_type, limit, search_limit),
+            daemon=True,
+        )
+        _scan_thread.start()
+
     return jsonify({"ok": True, "message": "Scan started"})
 
 
@@ -791,9 +811,13 @@ def api_convert_cancel():
     scan_cancel.set()
     with scan_lock:
         was_running = scan_progress["running"]
-        # If the thread is alive it will detect the event and clean up.
-        # If it's already dead (stale lock), force-reset here.
-        if was_running:
+        alive = _scan_thread is not None and _scan_thread.is_alive()
+        if was_running and alive:
+            # A live worker sets the final "cancelled" state itself at its next
+            # checkpoint. Just reflect that we're stopping.
+            scan_progress["phase"] = "cancelling"
+        elif was_running:
+            # Flag stuck with no worker behind it (hard crash) — force-reset.
             scan_progress.update({
                 "running": False,
                 "phase": "cancelled",
@@ -1054,7 +1078,17 @@ _scheduler_thread.start()
 
 
 def run():
+    """Local/dev entrypoint (Werkzeug). In Docker the container runs under
+    gunicorn instead — see the Dockerfile CMD."""
     debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    if debug and config.web_host not in ("127.0.0.1", "localhost", "::1"):
+        # The Werkzeug debugger is an unauthenticated remote-code-execution
+        # console. Never enable it on a bind reachable from the network.
+        logger.warning(
+            "FLASK_DEBUG ignored on non-loopback bind %s — refusing to expose "
+            "the Werkzeug debugger", config.web_host,
+        )
+        debug = False
     app.run(host=config.web_host, port=config.web_port, debug=debug)
 
 
