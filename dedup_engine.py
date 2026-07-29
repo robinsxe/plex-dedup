@@ -344,6 +344,23 @@ class DedupEngine:
     # Execute
     # ------------------------------------------------------------------ #
 
+    def _recycle_dest(self, file_path: str) -> str:
+        """Pick a non-colliding path inside the recycle bin. Duplicate copies
+        frequently share the same basename in different folders, so a plain
+        basename join would let the second move overwrite (destroy) the first
+        file already recycled — defeating the recycle bin's purpose."""
+        base = os.path.basename(file_path)
+        dest = os.path.join(self.config.recycle_bin, base)
+        if not os.path.exists(dest):
+            return dest
+        root, ext = os.path.splitext(base)
+        n = 1
+        while True:
+            candidate = os.path.join(self.config.recycle_bin, f"{root}.{n}{ext}")
+            if not os.path.exists(candidate):
+                return candidate
+            n += 1
+
     def execute_plan(self, plan: DeduplicationPlan) -> bool:
         title = plan.group.display_title
 
@@ -376,10 +393,8 @@ class DedupEngine:
 
                     if not deleted:
                         if self.config.recycle_bin:
-                            dest = os.path.join(
-                                self.config.recycle_bin,
-                                os.path.basename(remove_file.file_path),
-                            )
+                            os.makedirs(self.config.recycle_bin, exist_ok=True)
+                            dest = self._recycle_dest(remove_file.file_path)
                             shutil.move(remove_file.file_path, dest)
                             logger.info(f"  Moved to recycle bin: {dest}")
                         elif os.path.exists(remove_file.file_path):

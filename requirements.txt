@@ -4,4 +4,4 @@ flask>=3.0.0
 python-dotenv>=1.0.0
 rich>=13.0.0
 humanize>=4.9.0
-apscheduler>=3.10.0
+gunicorn>=21.2.0

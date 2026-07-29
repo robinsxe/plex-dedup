@@ -41,6 +41,10 @@ EXPOSE 8585
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8585/healthz', timeout=5).raise_for_status()" || exit 1
 
-# Default: launch web dashboard
+# Default: serve the dashboard with gunicorn (a production WSGI server) instead
+# of the Werkzeug dev server. Exactly one worker — the app keeps scan results,
+# the subtitle scheduler, and other state in process-global memory, so multiple
+# workers would each run their own copy and corrupt that state. A long request
+# timeout accommodates the synchronous scan/search/download endpoints.
 # Override with: docker run ... plex-dedup python cli.py dedup --live
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--workers", "1", "--threads", "4", "--timeout", "3600", "--bind", "0.0.0.0:8585", "app:app"]
