@@ -17,6 +17,24 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = os.environ.get("SETTINGS_FILE", "/data/settings.json")
 
+_TRUE_VALUES = {"true", "1", "yes", "on"}
+_FALSE_VALUES = {"false", "0", "no", "off"}
+
+
+def _parse_bool(value: str, default: bool, name: str) -> bool:
+    """Parse a boolean config string. Accepts true/1/yes/on and false/0/no/off
+    (case-insensitive); anything else logs a warning and keeps the default so a
+    typo can never silently flip a safety flag like dry_run."""
+    norm = value.strip().lower()
+    if norm in _TRUE_VALUES:
+        return True
+    if norm in _FALSE_VALUES:
+        return False
+    logger.warning(
+        f"Unrecognized boolean value {value!r} for {name}; using default {default}"
+    )
+    return default
+
 
 @dataclass
 class Config:
@@ -177,23 +195,29 @@ class Config:
             opensubtitles_username=_get("opensubtitles_username", "OPENSUBTITLES_USERNAME", ""),
             opensubtitles_password=_get("opensubtitles_password", "OPENSUBTITLES_PASSWORD", ""),
             subtitle_languages=lang_list,
-            subtitle_auto_download=_get("subtitle_auto_download", "SUBTITLE_AUTO_DOWNLOAD", "true").lower() == "true",
+            subtitle_auto_download=_parse_bool(
+                _get("subtitle_auto_download", "SUBTITLE_AUTO_DOWNLOAD", "true"),
+                True, "subtitle_auto_download"),
             subtitle_match_tags=match_tags,
             subtitle_daily_limit=int(_get("subtitle_daily_limit", "SUBTITLE_DAILY_LIMIT", "20")),
             subtitle_queue_hour=int(_get("subtitle_queue_hour", "SUBTITLE_QUEUE_HOUR", "4")),
-            dry_run=_get("dry_run", "DRY_RUN", "true").lower() == "true",
+            dry_run=_parse_bool(_get("dry_run", "DRY_RUN", "true"), True, "dry_run"),
             keep_strategy=_get("keep_strategy", "KEEP_STRATEGY", "best_quality"),
-            auto_unmonitor=_get("auto_unmonitor", "AUTO_UNMONITOR", "true").lower() == "true",
-            delete_files=_get("delete_files", "DELETE_FILES", "true").lower() == "true",
+            auto_unmonitor=_parse_bool(
+                _get("auto_unmonitor", "AUTO_UNMONITOR", "true"), True, "auto_unmonitor"),
+            delete_files=_parse_bool(
+                _get("delete_files", "DELETE_FILES", "true"), True, "delete_files"),
             recycle_bin=os.getenv("RECYCLE_BIN", ""),
-            schedule_enabled=os.getenv("SCHEDULE_ENABLED", "false").lower() == "true",
+            schedule_enabled=_parse_bool(
+                os.getenv("SCHEDULE_ENABLED", "false"), False, "SCHEDULE_ENABLED"),
             schedule_cron_hour=int(os.getenv("SCHEDULE_CRON_HOUR", "3")),
             schedule_cron_minute=int(os.getenv("SCHEDULE_CRON_MINUTE", "0")),
             schedule_cron_day_of_week=os.getenv("SCHEDULE_CRON_DAY_OF_WEEK", "sun"),
             web_host=os.getenv("WEB_HOST", "0.0.0.0"),
             web_port=int(os.getenv("WEB_PORT", "8585")),
             web_password=os.getenv("WEB_PASSWORD", ""),
-            web_auth_disabled=os.getenv("WEB_AUTH_DISABLED", "false").lower() == "true",
+            web_auth_disabled=_parse_bool(
+                os.getenv("WEB_AUTH_DISABLED", "false"), False, "WEB_AUTH_DISABLED"),
         )
 
     def validate(self) -> list[str]:
