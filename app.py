@@ -506,7 +506,7 @@ class _ScanCancelled(Exception):
 
 
 def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
-    """Background worker for convert scan + Prowlarr search."""
+    """Background worker for convert scan + indexer search (via Radarr/Sonarr)."""
     global current_analysis
 
     with scan_lock:
@@ -551,7 +551,7 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
 
         current_analysis = results
 
-        # Auto-search Prowlarr for items needing replacement
+        # Auto-search indexers for items needing replacement
         # search_limit: 0 = all, -1 = skip, N = first N items
         needs = [r for r in results if r.status == "needs_replacement"]
         if needs and config.prowlarr_api_key and search_limit != -1:
@@ -570,7 +570,7 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
                 scan_progress.update({
                     "phase": "searching", "current": 0,
                     "total": search_count,
-                    "current_title": "Searching Prowlarr...",
+                    "current_title": "Searching indexers...",
                 })
             analyzer.search_replacements(
                 results, limit=search_limit,
@@ -671,7 +671,7 @@ def api_convert_progress():
 
 @app.route("/api/convert/search", methods=["POST"])
 def api_convert_search():
-    """Search Prowlarr for replacement releases."""
+    """Search indexers (via Radarr/Sonarr) for replacement releases."""
     global current_analysis
 
     if not current_analysis:
@@ -696,7 +696,7 @@ def api_convert_search():
 
 @app.route("/api/convert/execute", methods=["POST"])
 def api_convert_execute():
-    """Execute replacement downloads via Prowlarr."""
+    """Execute replacement downloads via Radarr/Sonarr."""
     global current_analysis
 
     if not current_analysis:

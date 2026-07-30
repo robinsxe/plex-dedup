@@ -25,7 +25,7 @@ _plex_stub.DuplicateGroup = type("DuplicateGroup", (), {})
 _plex_stub.MediaFile = type("MediaFile", (), {})
 
 from dedup_engine import DedupEngine  # noqa: E402
-from library_analyzer import _build_nordic_pattern  # noqa: E402
+from analysis_models import _build_nordic_pattern  # noqa: E402
 
 
 def _make_engine(dry_run: bool = True) -> DedupEngine:

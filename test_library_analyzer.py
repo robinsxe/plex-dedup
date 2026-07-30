@@ -13,12 +13,9 @@ import test_stubs
 
 test_stubs.install_common_stubs()
 
+from analysis_models import _normalize_release_title  # noqa: E402
 from arr_common import StaleReleaseError  # noqa: E402
-from library_analyzer import (  # noqa: E402
-    AnalysisResult,
-    LibraryAnalyzer,
-    _normalize_release_title,
-)
+from library_analyzer import AnalysisResult, LibraryAnalyzer  # noqa: E402
 
 
 def _make_result(media_type: str = "movie") -> AnalysisResult:
@@ -37,7 +34,7 @@ def _make_result(media_type: str = "movie") -> AnalysisResult:
         matching_releases=[],
         has_nordic_release=True,
         recommended_release="Test.Movie.2024.1080p.BluRay.x264-NORDIC",
-        prowlarr_results=[],
+        indexer_results=[],
         imdb_id="tt1234567",
         tmdb_id="98765",
         tvdb_id="55555",

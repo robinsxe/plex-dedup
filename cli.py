@@ -275,16 +275,16 @@ def cmd_convert(config, args):
 
         console.print(detail)
 
-        # Step 2: Search Prowlarr
+        # Step 2: Search indexers (via Radarr/Sonarr)
         if prowlarr_ok and not getattr(args, 'scan_only', False):
             console.print(
-                f"\n[bold]Searching Prowlarr for {len(needs_replacement)} "
+                f"\n[bold]Searching indexers for {len(needs_replacement)} "
                 f"replacement release(s)...[/]"
             )
             with console.status("[bold yellow]Searching indexers..."):
                 analyzer.search_replacements(all_results)
 
-            found = sum(1 for r in needs_replacement if r.prowlarr_results)
+            found = sum(1 for r in needs_replacement if r.indexer_results)
             console.print(
                 f"  Found releases on indexers for [bold]{found}[/] "
                 f"out of {len(needs_replacement)} items"
@@ -342,7 +342,7 @@ def main():
     conv_p.add_argument("--type", choices=["movies", "tv", "all"], default="all")
     conv_p.add_argument("--live", action="store_true", help="Disable dry run")
     conv_p.add_argument("--limit", dest="convert_limit", type=int, default=0, help="Max items to analyze (0 = all)")
-    conv_p.add_argument("--scan-only", action="store_true", help="Analyze only, don't search Prowlarr")
+    conv_p.add_argument("--scan-only", action="store_true", help="Analyze only, don't search indexers")
     conv_p.add_argument("-y", "--yes", action="store_true")
 
     # Web command

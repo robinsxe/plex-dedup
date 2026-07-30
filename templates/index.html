@@ -181,7 +181,7 @@
             <div class="stat"><div class="stat-value" id="conv-stat-replace" style="color:var(--danger);">0</div><div class="stat-label">Needs Replacement</div></div>
             <div class="stat"><div class="stat-value" id="conv-stat-nosubs">0</div><div class="stat-label">No Subs Anywhere</div></div>
             <div class="stat"><div class="stat-value purple" id="conv-stat-nordic">0</div><div class="stat-label">NORDIC Available</div></div>
-            <div class="stat"><div class="stat-value" id="conv-stat-prowlarr">0</div><div class="stat-label">Found on Indexers</div></div>
+            <div class="stat"><div class="stat-value" id="conv-stat-indexer">0</div><div class="stat-label">Found on Indexers</div></div>
             <div class="stat"><div class="stat-value purple" id="conv-stat-downloaded">0</div><div class="stat-label">Subs Downloaded</div></div>
         </div>
 
@@ -202,14 +202,14 @@
                     <option value="500">Analyze 500 items</option>
                 </select>
                 <select id="conv-search-limit">
-                    <option value="0">Search all on Prowlarr</option>
-                    <option value="10">Search 10 on Prowlarr</option>
-                    <option value="25">Search 25 on Prowlarr</option>
-                    <option value="50" selected>Search 50 on Prowlarr</option>
-                    <option value="100">Search 100 on Prowlarr</option>
-                    <option value="250">Search 250 on Prowlarr</option>
-                    <option value="500">Search 500 on Prowlarr</option>
-                    <option value="-1">Skip Prowlarr search</option>
+                    <option value="0">Search all on indexers</option>
+                    <option value="10">Search 10 on indexers</option>
+                    <option value="25">Search 25 on indexers</option>
+                    <option value="50" selected>Search 50 on indexers</option>
+                    <option value="100">Search 100 on indexers</option>
+                    <option value="250">Search 250 on indexers</option>
+                    <option value="500">Search 500 on indexers</option>
+                    <option value="-1">Skip indexer search</option>
                 </select>
                 <button class="primary" id="btn-conv-scan" onclick="convertScan()">🔍 Analyze Library</button>
                 <button class="purple" id="btn-conv-queue" onclick="addToQueue()" style="display:none;">📥 Add to Queue</button>
@@ -233,7 +233,7 @@
             <div class="empty-state">
                 <div class="icon">🇸🇪</div>
                 <p>Click <strong>Analyze Library</strong> to find movies & shows missing Swedish subtitles.</p>
-                <p style="margin-top:8px; font-size:13px;">Items with subs available get .srt downloads. Items without get replacement releases via Prowlarr.</p>
+                <p style="margin-top:8px; font-size:13px;">Items with subs available get .srt downloads. Items without get replacement releases via Radarr/Sonarr.</p>
             </div>
         </div>
     </div>
@@ -551,7 +551,7 @@ async function pollConvertProgress() {
             text.textContent=pct+'%';
             title.textContent=p.current_title||'';
         } else if(p.phase==='searching') {
-            label.textContent=`Searching Prowlarr for replacements...`;
+            label.textContent=`Searching indexers for replacements...`;
             fill.style.width='100%';
             fill.style.background='var(--purple)';
             text.textContent='Searching indexers...';
@@ -572,17 +572,17 @@ async function pollConvertProgress() {
                 document.getElementById('conv-stat-replace').textContent=s.needs_replacement;
                 document.getElementById('conv-stat-nosubs').textContent=s.no_subs_available;
                 document.getElementById('conv-stat-nordic').textContent=s.nordic_available;
-                document.getElementById('conv-stat-prowlarr').textContent=s.prowlarr_results_found;
+                document.getElementById('conv-stat-indexer').textContent=s.indexer_results_found;
 
                 renderConvertResults(p.results||[]);
 
                 if(s.has_subs>0){
                     document.getElementById('btn-conv-queue').style.display='';
                 }
-                if(s.prowlarr_results_found>0){
+                if(s.indexer_results_found>0){
                     document.getElementById('btn-conv-execute').style.display='';
                 }
-                toast(`Analysis complete: ${s.has_subs} can download subs, ${s.needs_replacement} need replacement, ${s.prowlarr_results_found} found on indexers`,'info');
+                toast(`Analysis complete: ${s.has_subs} can download subs, ${s.needs_replacement} need replacement, ${s.indexer_results_found} found on indexers`,'info');
             }
             updateGrabbedCount(p.grabbed_count||0);
             updateSkippedCount(p.skipped_count||0);
@@ -612,7 +612,7 @@ function renderConvertResults(results) {
         const statusLabel=statusLabels[r.status]||r.status;
 
         const nordicBadge=r.has_nordic_release?'<span style="background:var(--purple);color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">NORDIC</span>':'';
-        const prowlarrBadge=r.prowlarr_results&&r.prowlarr_results.length>0?`<span style="background:var(--info);color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${r.prowlarr_results.length} indexer results</span>`:'';
+        const indexerBadge=r.indexer_results&&r.indexer_results.length>0?`<span style="background:var(--info);color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${r.indexer_results.length} indexer results</span>`:'';
 
         let details='';
         if(r.status==='needs_replacement') {
@@ -629,7 +629,7 @@ function renderConvertResults(results) {
             <div class="dup-header" onclick="document.getElementById('conv-details-${idx}').classList.toggle('open');document.getElementById('conv-arrow-${idx}').classList.toggle('open');">
                 <span class="dup-title">${esc(r.display_title)}</span>
                 <span style="color:${statusColor};font-size:13px;font-weight:600;">${statusLabel}</span>
-                ${nordicBadge}${prowlarrBadge}
+                ${nordicBadge}${indexerBadge}
                 <span class="dup-arrow" id="conv-arrow-${idx}">▶</span>
             </div>
             <div class="dup-details" id="conv-details-${idx}">${details}</div>

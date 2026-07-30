@@ -17,13 +17,9 @@ import test_stubs
 
 test_stubs.install_common_stubs()
 
-import library_analyzer  # noqa: E402
-from library_analyzer import (  # noqa: E402
-    AnalysisResult,
-    GrabTracker,
-    LibraryAnalyzer,
-    SkipTracker,
-)
+import trackers  # noqa: E402
+from library_analyzer import AnalysisResult, LibraryAnalyzer  # noqa: E402
+from trackers import GrabTracker, SkipTracker  # noqa: E402
 
 
 def _make_result() -> AnalysisResult:
@@ -39,7 +35,7 @@ def _make_result() -> AnalysisResult:
         matching_releases=[],
         has_nordic_release=True,
         recommended_release="Test.Movie.2024.1080p.BluRay.x264-NORDIC",
-        prowlarr_results=[{
+        indexer_results=[{
             "title": "Test.Movie.2024.1080p.BluRay.x264-NORDIC",
             "guid": "guid-1",
             "indexerId": 7,
@@ -70,12 +66,12 @@ class GrabTrackerPersistenceTests(unittest.TestCase):
 
     def test_mark_grabbed_reports_failure_when_save_fails(self):
         tracker = GrabTracker(path=self.path)
-        original = library_analyzer.atomic_write_json
-        library_analyzer.atomic_write_json = MagicMock(side_effect=OSError("disk full"))
+        original = trackers.atomic_write_json
+        trackers.atomic_write_json = MagicMock(side_effect=OSError("disk full"))
         try:
             self.assertFalse(tracker.mark_grabbed(_make_result()))
         finally:
-            library_analyzer.atomic_write_json = original
+            trackers.atomic_write_json = original
 
     def test_corrupt_file_is_quarantined_on_load(self):
         with open(self.path, "w") as f:

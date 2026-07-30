@@ -13,7 +13,7 @@ from config import Config
 from plex_client import PlexClient, DuplicateGroup, MediaFile
 from radarr_client import RadarrClient
 from sonarr_client import SonarrClient
-from library_analyzer import _build_nordic_pattern
+from analysis_models import _build_nordic_pattern
 
 logger = logging.getLogger(__name__)
 

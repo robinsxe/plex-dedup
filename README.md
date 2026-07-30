@@ -33,8 +33,8 @@ Fixing this manually means filtering Plex for duplicates, unmonitoring in Radarr
 2. **Queries OpenSubtitles** — Checks which *releases* have Swedish subs available
 3. **Identifies NORDIC releases** — Flags releases with NORDIC/SWE/SWESUB/SWEDISH tags
 4. **Compares releases** — If your current file doesn't have Swedish subs but another release does, flags it for replacement
-5. **Searches Prowlarr** — Finds the recommended release on your indexers
-6. **Grabs the release** — Pushes to your download client (SABnzbd/qBittorrent) via Prowlarr
+5. **Searches your indexers** — Finds the recommended release via the Radarr/Sonarr interactive search (indexers synced from Prowlarr)
+6. **Grabs the release** — Pushes to your download client (SABnzbd/qBittorrent) via Radarr/Sonarr
 
 ## Quick Start (Docker on QNAP)
 
@@ -117,7 +117,7 @@ python cli.py convert --type movies --limit 50
 # Analyze and grab replacement releases (live mode)
 python cli.py convert --type all --live -y
 
-# Analyze only, don't search Prowlarr
+# Analyze only, don't search indexers
 python cli.py convert --scan-only
 
 # Launch web dashboard
@@ -219,7 +219,7 @@ network_mode: host
 - **Per-item or bulk execution** — Process one movie or select many at once
 - **Dry run toggle** — Safe preview mode, always on by default. For the subtitle queue, dry run only reports what would happen — it never changes the queue
 - **Subtitle scanner** — Find and download missing Swedish subtitles
-- **Swedish Convert** — Analyze library for Swedish sub availability, search Prowlarr, grab replacements
+- **Swedish Convert** — Analyze library for Swedish sub availability, search indexers, grab replacements
 
 ## Troubleshooting
 
@@ -244,11 +244,15 @@ plex-dedup/
 ├── plex_client.py          # Plex API (movies + TV)
 ├── radarr_client.py        # Radarr API (movie unmonitoring)
 ├── sonarr_client.py        # Sonarr API (episode unmonitoring)
-├── prowlarr_client.py      # Prowlarr API (indexer search & grab)
+├── prowlarr_client.py      # Prowlarr API (connection check; search unused)
 ├── opensubtitles_client.py # OpenSubtitles REST API
 ├── subtitle_manager.py     # Subtitle scanning & downloading
 ├── dedup_engine.py         # Core dedup logic
-├── library_analyzer.py     # Swedish subtitle library converter
+├── library_analyzer.py     # Swedish subtitle library converter (engine assembly)
+├── library_analysis.py     # Converter: Plex scan + OpenSubtitles analysis
+├── library_grabber.py      # Converter: indexer search + release grabbing
+├── analysis_models.py      # Converter: shared data model & release utils
+├── trackers.py             # Persistent grab/skip/cooldown state stores
 ├── app.py                  # Flask web dashboard
 ├── cli.py                  # CLI interface
 └── templates/
