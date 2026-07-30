@@ -30,6 +30,7 @@ from trackers import (  # noqa: F401 — re-exported for callers and tests
     GrabTracker,
     SearchCooldownTracker,
     SkipTracker,
+    _parse_int_env,
 )
 from library_analysis import AnalysisOps
 from library_grabber import GrabOps
@@ -71,6 +72,11 @@ class LibraryAnalyzer(AnalysisOps, GrabOps):
         ).strip().lower() in ("1", "true", "yes", "on")
         # Per-batch grab counters; reset on each execute_all invocation.
         self._grab_stats = self._empty_grab_stats()
+        # Post-grab verification: only check grabs at least this old (gives
+        # the download time to import), and release grabs that never import
+        # before the deadline so the next scan can retry after cooldown.
+        self._verify_min_age_s = _parse_int_env("VERIFY_MIN_AGE_HOURS", 1) * 3600
+        self._verify_deadline_s = _parse_int_env("VERIFY_DEADLINE_DAYS", 7) * 86400
 
     # ------------------------------------------------------------------ #
     # Summary

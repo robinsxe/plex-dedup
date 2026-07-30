@@ -4,6 +4,7 @@ Plex API client for scanning libraries and finding duplicate movies and episodes
 
 import logging
 from dataclasses import dataclass, field
+from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
 from plexapi.video import Movie, Show, Episode
 
@@ -412,6 +413,37 @@ class PlexClient:
         except Exception:
             pass
         return False
+
+    def get_item_media(self, rating_key: str) -> dict | None:
+        """
+        Fetch a single item's current file state by rating key, for grab
+        verification. Returns {"file_paths": [...], "has_swedish_sub": bool}
+        across all media versions/parts, {"missing": True} when the item no
+        longer exists in Plex, or None when it can't be determined (Plex
+        unreachable, bad key) — callers must treat None as "unknown", not
+        as "gone".
+        """
+        try:
+            item = self.server.fetchItem(int(rating_key))
+        except NotFound:
+            logger.info(f"Plex item {rating_key} no longer exists")
+            return {"missing": True}
+        except Exception as e:
+            logger.warning(f"Could not fetch Plex item {rating_key}: {e}")
+            return None
+        try:
+            paths: list[str] = []
+            has_sv = False
+            for media in item.media:
+                for part in media.parts:
+                    if part.file:
+                        paths.append(part.file)
+                    if self._has_subtitle(part, "sv"):
+                        has_sv = True
+            return {"file_paths": paths, "has_swedish_sub": has_sv}
+        except Exception as e:
+            logger.warning(f"Could not read media for Plex item {rating_key}: {e}")
+            return None
 
     def delete_media(self, rating_key: str, media_id: int) -> bool:
         try:

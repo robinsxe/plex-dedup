@@ -35,6 +35,7 @@ Fixing this manually means filtering Plex for duplicates, unmonitoring in Radarr
 4. **Compares releases** — If your current file doesn't have Swedish subs but another release does, flags it for replacement
 5. **Searches your indexers** — Finds the recommended release via the Radarr/Sonarr interactive search (indexers synced from Prowlarr)
 6. **Grabs the release** — Pushes to your download client (SABnzbd/qBittorrent) via Radarr/Sonarr
+7. **Verifies the import** — At the start of each later scan, confirms the new file (or its Swedish sub) actually landed in Plex; grabs that never import are released for retry after the search cooldown
 
 ## Quick Start (Docker on QNAP)
 
@@ -176,6 +177,8 @@ Settings → General → API Key (in each app's web UI)
 | `SKIP_EXPIRY_DAYS` | `30` | Days an item with no indexer results stays skipped before retry (1–365) |
 | `SEARCH_COOLDOWN_DAYS` | `30` | Days before a scanned item is re-analyzed against OpenSubtitles (1–365) |
 | `CONVERT_MAX_SIZE_GB` | `25` | Reject replacement releases larger than this (0 = no limit) |
+| `VERIFY_MIN_AGE_HOURS` | `1` | Post-grab verification: only check grabs at least this old (1–365) |
+| `VERIFY_DEADLINE_DAYS` | `7` | Release grabs that never imported before this deadline; they retry after the search cooldown (1–365) |
 | `GRAB_REFRESH_BEFORE` | `0` | Refresh the *arr release cache before each grab (`1`/`true` to enable) |
 
 **Advanced (state paths):** `SETTINGS_FILE`, `GRABBED_DB`, `SKIPPED_DB`, `COOLDOWN_DB`, and `QUEUE_DB` override where state is persisted (all default under `/data/`). You normally don't need to change these — just keep the `/data` volume mounted.

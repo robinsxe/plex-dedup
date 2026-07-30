@@ -7,6 +7,8 @@ and grab-stat state this code reads off ``self``.
 """
 
 import logging
+import time
+from types import SimpleNamespace
 
 from analysis_models import AnalysisResult, _normalize_release_title
 from arr_common import StaleReleaseError
@@ -33,6 +35,89 @@ class GrabOps:
         before a batch if they want clean counter values.
         """
         self._grab_stats = self._empty_grab_stats()
+
+    # ------------------------------------------------------------------ #
+    # Post-grab verification
+    # ------------------------------------------------------------------ #
+
+    def verify_grabs(self) -> dict:
+        """
+        Check earlier grabs against Plex. Grabbing only enqueues the download
+        in Radarr/Sonarr — the import happens later, outside this app — so a
+        grab is confirmed once the old file was replaced or a Swedish
+        subtitle is present. Grabs that never import before the deadline are
+        released (grab entry removed) and put on search cooldown, so the next
+        scan retries them once the cooldown expires instead of excluding them
+        forever.
+
+        Runs at the start of each convert scan. Entries written before the
+        verification metadata existed are left untouched.
+        """
+        now = time.time()
+        pending = self.grab_tracker.pending_verification(self._verify_min_age_s)
+        summary = {"checked": 0, "verified": 0, "released": 0, "pending": 0}
+
+        for entry in pending:
+            summary["checked"] += 1
+            ids = {
+                "imdb_id": entry.get("imdb_id"),
+                "tmdb_id": entry.get("tmdb_id"),
+                "rating_key": entry.get("rating_key"),
+            }
+
+            if ids["rating_key"]:
+                item = self.plex.get_item_media(ids["rating_key"])
+                if item is None:
+                    # Plex unreachable — can't judge, leave it.
+                    summary["pending"] += 1
+                    continue
+                if item.get("missing"):
+                    # Item deleted from Plex. After the deadline, drop the
+                    # grab entries so a re-added copy isn't excluded forever.
+                    # No cooldown — if it comes back, analyze it right away.
+                    if now - entry.get("grabbed_ts", now) >= self._verify_deadline_s:
+                        self.grab_tracker.remove(**ids)
+                        summary["released"] += 1
+                        logger.info(
+                            f"Grabbed item gone from Plex — dropped grab "
+                            f"entry: {entry.get('title')}"
+                        )
+                    else:
+                        summary["pending"] += 1
+                    continue
+                old_path = entry.get("file_path") or ""
+                paths = item.get("file_paths") or []
+                replaced = bool(old_path) and bool(paths) and old_path not in paths
+                if item.get("has_swedish_sub") or replaced:
+                    self.grab_tracker.mark_verified(**ids)
+                    summary["verified"] += 1
+                    logger.info(f"Verified grab: {entry.get('title')}")
+                    continue
+
+            # Checked but not imported yet (or no rating_key to check).
+            if now - entry.get("grabbed_ts", now) >= self._verify_deadline_s:
+                self.grab_tracker.remove(**ids)
+                shim = SimpleNamespace(
+                    display_title=entry.get("title", ""),
+                    imdb_id=ids["imdb_id"],
+                    tmdb_id=ids["tmdb_id"],
+                    rating_key=ids["rating_key"] or "",
+                )
+                self.search_cooldown.mark_searched(shim)
+                summary["released"] += 1
+                logger.warning(
+                    f"Grab never imported before deadline — released for retry "
+                    f"after cooldown: {entry.get('title')}"
+                )
+            else:
+                summary["pending"] += 1
+
+        if summary["checked"]:
+            logger.info(
+                f"Grab verification: {summary['verified']} verified, "
+                f"{summary['released']} released, {summary['pending']} pending"
+            )
+        return summary
 
     # ------------------------------------------------------------------ #
     # Indexer search (via Radarr/Sonarr)

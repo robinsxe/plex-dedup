@@ -511,8 +511,9 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
 
     with scan_lock:
         scan_progress.update({
-            "running": True, "phase": "analyzing", "current": 0,
-            "total": 0, "current_title": "Starting...", "error": None,
+            "running": True, "phase": "verifying", "current": 0,
+            "total": 0, "current_title": "Verifying earlier grabs...",
+            "error": None, "verify_summary": None,
         })
 
     def _check_cancel():
@@ -527,6 +528,19 @@ def _run_convert_scan(scan_type: str, limit: int, search_limit: int = 50):
             })
 
     try:
+        # Confirm earlier grabs actually imported; release stalled ones.
+        _check_cancel()
+        try:
+            verify_summary = analyzer.verify_grabs()
+        except Exception as e:
+            logger.warning(f"Grab verification failed: {e}")
+            verify_summary = None
+        with scan_lock:
+            scan_progress.update({
+                "phase": "analyzing", "verify_summary": verify_summary,
+                "current_title": "Starting...",
+            })
+
         results = []
         if scan_type in ("movies", "all"):
             _check_cancel()

@@ -155,13 +155,76 @@ class GrabTracker(KeyedJsonStore):
     def mark_grabbed(self, result) -> bool:
         """Mark an AnalysisResult as grabbed. Returns False if persistence
         failed — the caller must surface that, since a lost grab record causes
-        the item to be re-grabbed (re-downloaded) on the next scan."""
+        the item to be re-grabbed (re-downloaded) on the next scan.
+
+        Alongside the display fields the entry records what post-grab
+        verification needs: the pre-grab file path, an epoch timestamp, and
+        the item ids (entries are stored per id key, so each entry carries
+        its sibling ids to allow item-wise updates)."""
         entry = {
             "title": result.display_title,
             "grabbed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "grabbed_ts": time.time(),
             "recommended_release": result.recommended_release,
+            "file_path": result.file_path,
+            "imdb_id": result.imdb_id,
+            "tmdb_id": result.tmdb_id,
+            "rating_key": result.rating_key,
+            "verified": False,
         }
         return self._set(result, entry, defer_save=False)
+
+    def pending_verification(self, min_age_seconds: float) -> list[dict]:
+        """Entries eligible for a verification check: not yet verified, older
+        than min_age_seconds, and written by a version that records the
+        verification metadata (legacy entries are left alone). Deduplicated
+        per item; returns entry copies."""
+        now = time.time()
+        out: list[dict] = []
+        seen: set[tuple] = set()
+        with self._lock:
+            for entry in self._data.values():
+                ts = entry.get("grabbed_ts")
+                if entry.get("verified") or not ts:
+                    continue
+                if now - ts < min_age_seconds:
+                    continue
+                ident = (entry.get("imdb_id"), entry.get("tmdb_id"),
+                         entry.get("rating_key"))
+                if ident in seen or not any(ident):
+                    continue
+                seen.add(ident)
+                out.append(dict(entry))
+        return out
+
+    def mark_verified(self, imdb_id: str = None, tmdb_id: str = None,
+                      rating_key: str = None) -> None:
+        """Flag an item's grab entries as verified (the replacement landed);
+        the item stays excluded from future scans."""
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            changed = False
+            for key in self._keys(imdb_id, tmdb_id, rating_key):
+                entry = self._data.get(key)
+                if entry is not None and not entry.get("verified"):
+                    entry["verified"] = True
+                    entry["verified_at"] = stamp
+                    changed = True
+            if changed:
+                self._save_locked()
+
+    def remove(self, imdb_id: str = None, tmdb_id: str = None,
+               rating_key: str = None) -> int:
+        """Delete an item's grab entries, releasing it for re-analysis on
+        the next scan. Returns the number of keys removed."""
+        with self._lock:
+            removed = 0
+            for key in self._keys(imdb_id, tmdb_id, rating_key):
+                if self._data.pop(key, None) is not None:
+                    removed += 1
+            if removed:
+                self._save_locked()
+            return removed
 
 
 class SkipTracker(KeyedJsonStore):
