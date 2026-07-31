@@ -545,7 +545,12 @@ async function pollConvertProgress() {
 
         const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
 
-        if(p.phase==='analyzing') {
+        if(p.phase==='verifying') {
+            label.textContent=`Verifying earlier grabs...`;
+            fill.style.width='0%';
+            text.textContent='';
+            title.textContent=p.current_title||'';
+        } else if(p.phase==='analyzing') {
             label.textContent=`Analyzing library... (${p.current}/${p.total})`;
             fill.style.width=pct+'%';
             text.textContent=pct+'%';
@@ -583,6 +588,9 @@ async function pollConvertProgress() {
                     document.getElementById('btn-conv-execute').style.display='';
                 }
                 toast(`Analysis complete: ${s.has_subs} can download subs, ${s.needs_replacement} need replacement, ${s.indexer_results_found} found on indexers`,'info');
+            }
+            if(p.verify_summary&&(p.verify_summary.verified>0||p.verify_summary.released>0)){
+                toast(`Grab verification: ${p.verify_summary.verified} confirmed imported, ${p.verify_summary.released} released for retry`,'info');
             }
             updateGrabbedCount(p.grabbed_count||0);
             updateSkippedCount(p.skipped_count||0);
